@@ -34,7 +34,8 @@ final class DebugProbeDelegate: NSObject, NSApplicationDelegate {
         + "ce: document.querySelectorAll('[contenteditable]').length,"
         + "inputs: document.querySelectorAll('textarea, [contenteditable], [role=textbox]').length,"
         + "robots: document.querySelectorAll('.message-item-robot, .robot-message, [class*=robot]').length,"
-        + "btns: document.querySelectorAll('button').length})"
+        + "btns: document.querySelectorAll('button').length,"
+        + "bodyText: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 350)})"
 
     func applicationDidFinishLaunching(_ n: Notification) {
         let mgr = DolaWebViewManager.shared
