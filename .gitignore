@@ -1,2 +1,6 @@
 .worktrees/
 .superpowers/
+.build/
+.swiftpm/
+*.xcodeproj/
+DolaLite.app
