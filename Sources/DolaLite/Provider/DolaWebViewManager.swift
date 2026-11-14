@@ -17,7 +17,8 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
         webView.navigationDelegate = self
     }
 
-    /// Load /chat nếu chưa; sẵn sàng khi tìm thấy editor. Throw notLoggedIn nếu 12s không có editor.
+    /// Load /chat nếu chưa; sẵn sàng khi có editor VÀ đã login (trang guest vẫn render editor).
+    /// Editor có mà chưa login → throw notLoggedIn ngay, không đợi hết 12s.
     @MainActor
     func ensureReady() async throws {
         if readyState { return }
@@ -26,16 +27,20 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
             try await Task.sleep(nanoseconds: 300_000_000)
             let probe = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String
             if let json = probe, let data = json.data(using: .utf8),
-               let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
-               info.editorTag != "none" {
-                readyState = true
-                return
+               let info = try? JSONDecoder().decode(ProbeInfo.self, from: data) {
+                if info.editorTag != "none" && info.loggedIn {
+                    readyState = true
+                    return
+                }
+                if info.editorTag != "none" && !info.loggedIn {
+                    throw DolaError.notLoggedIn  // guest state — fail nhanh thay vì timeout 60s
+                }
             }
         }
         throw DolaError.notLoggedIn
     }
 
-    struct ProbeInfo: Decodable { let editorTag: String; let botSelector: String?; let botCount: Int }
+    struct ProbeInfo: Decodable { let editorTag: String; let botSelector: String?; let botCount: Int; let loggedIn: Bool }
 
     /// Hiện cửa sổ login (chính webView, tạm visible) tới khi login xong.
     @MainActor
@@ -53,7 +58,7 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
             if let s = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
                let data = s.data(using: .utf8),
                let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
-               info.editorTag != "none" { readyState = true }
+               info.editorTag != "none", info.loggedIn { readyState = true }
         }
         w.orderOut(nil)   // giữ window sống (webView không dealloc), chỉ ẩn
     }

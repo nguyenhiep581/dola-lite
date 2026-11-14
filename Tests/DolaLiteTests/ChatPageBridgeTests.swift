@@ -39,4 +39,11 @@ import Testing
         #expect(!ChatPageBridge.sendScript(prompt: "x").contains(dq_sq))
         #expect(ChatPageBridge.probeScript.contains("\u{22}.message-item-robot\u{22}"))
     }
+
+    /// Trang guest của dola.com vẫn render editor → probe phải báo thêm loggedIn
+    /// (dựa trên text "Log in"/"Đăng nhập" trong body) để ensureReady không kết luận sai.
+    @Test func probeScriptReportsLoggedInState() {
+        #expect(ChatPageBridge.probeScript.contains("loggedIn"))
+        #expect(ChatPageBridge.probeScript.contains("Đăng nhập"))
+    }
 }

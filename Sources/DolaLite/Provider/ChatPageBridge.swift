@@ -14,7 +14,8 @@ enum ChatPageBridge {
         return String(raw.dropFirst().dropLast())          // "..."
     }
 
-    /// Probe DOM: trả về editorTag (textarea/contenteditable/none) + botSelector khớp đầu tiên.
+    /// Probe DOM: trả về editorTag (textarea/contenteditable/none) + botSelector khớp đầu tiên
+    /// + loggedIn (trang guest của dola.com vẫn render editor nên editorTag không đủ để kết luận login).
     /// Lưu ý: interpolate mảng Swift trực tiếp — Array.description bọc từng phần tử bằng
     /// nháy kép, cho ra JS array hợp lệ; KHÔNG map thêm nháy đơn quanh selector vì
     /// querySelectorAll("'.x'") throw SyntaxError (đã verify bằng engine thật).
@@ -27,7 +28,8 @@ enum ChatPageBridge {
         const n = document.querySelectorAll(s);
         if (n.length) { botSelector = s; botCount = n.length; break; }
       }
-      return JSON.stringify({editorTag: ed ? ed.tagName : 'none', botSelector, botCount});
+      return JSON.stringify({editorTag: ed ? ed.tagName : 'none', botSelector, botCount,
+        loggedIn: !/(Log in|Đăng nhập)/i.test(document.body.innerText)});
     })()
     """
 
