@@ -77,9 +77,12 @@ import Testing
 
     // MARK: openChat endpoint
 
-    @Test func newTabURLFullyEncodesChatURL() {
+    /// Fix round 1 (Task 2B): fork chỉ nhận dạng query legacy KHÔNG tên param —
+    /// `?url=` bị bỏ qua → tab about:blank. Query phải là chính URL đã encode.
+    @Test func newTabURLUsesLegacyQueryWithoutParamName() {
         let url = DolaEngineManager.newTabURL(port: 9300, chat: Config.chatURL)
-        #expect(url.absoluteString == "http://127.0.0.1:9300/json/new?url=https%3A%2F%2Fwww.dola.com%2Fchat%2F")
+        #expect(url.absoluteString == "http://127.0.0.1:9300/json/new?https%3A%2F%2Fwww.dola.com%2Fchat%2F")
+        #expect(!url.absoluteString.contains("url="))
     }
 
     // MARK: rsync args (regression giữ từ SessionImporterTests)

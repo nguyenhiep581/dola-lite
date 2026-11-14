@@ -14,7 +14,7 @@ import Foundation
 ///   launch:     rsync profile → tmp (exclude cache/Singleton*) → browser headless
 ///               --saman-from-chat=<pid> --remote-debugging-port=<9300..9399>
 ///               --no-first-run about:blank → poll /json/version (20s)
-///   openChat:   PUT /json/new?url=<encoded> → page ws URL → ws giữ sống
+///   openChat:   PUT /json/new?<encoded> → page ws URL → ws giữ sống
 ///   ensureReady: Runtime.evaluate(focusAndBaselineScript) == "FOCUSED" (30s)
 ///   runPrompt:  focusAndBaseline → Input.insertText → Enter keyDown/keyUp
 ///               → poll pollScript mỗi 300ms → yield → stable / timeout 60s
@@ -177,7 +177,7 @@ final class DolaEngineManager {
         }
     }
 
-    /// PUT /json/new?url=<encoded chat URL> → page webSocketDebuggerUrl → ws giữ sống.
+    /// PUT /json/new?<encoded chat URL> → page webSocketDebuggerUrl → ws giữ sống.
     private func openChat() async throws {
         guard let port else { throw DolaError.notLoggedIn }
         var req = URLRequest(url: Self.newTabURL(port: port, chat: Config.chatURL))
@@ -261,11 +261,16 @@ extension DolaEngineManager {
         (response["error"] as? [String: Any])?["message"] as? String
     }
 
-    /// Endpoint mở tab mới: PUT /json/new?url=<fully-encoded chat URL>.
+    /// Endpoint mở tab mới: PUT /json/new?<fully-encoded chat URL>.
+    /// Fix round 1 (Task 2B): fork này chỉ chấp nhận dạng query CŨ của DevTools —
+    /// query KHÔNG có tên param (`/json/new?<url>`); dạng `?url=<url>` bị bỏ qua
+    /// → tab mở thành about:blank → ensureReady poll editor mãi mãi (pageNotReady).
+    /// Verify A/B của controller trên cùng engine đang sống: `?url=...` → about:blank,
+    /// `?...` → đúng trang chat trong /json/list.
     nonisolated static func newTabURL(port: Int, chat: URL) -> URL {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "."))
         let encoded = chat.absoluteString.addingPercentEncoding(withAllowedCharacters: allowed)!
-        return URL(string: "http://127.0.0.1:\(port)/json/new?url=\(encoded)")!
+        return URL(string: "http://127.0.0.1:\(port)/json/new?\(encoded)")!
     }
 
     // MARK: Process / network helpers (absorbed từ SessionImporter, proven fix round 3-4)
