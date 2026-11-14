@@ -27,8 +27,18 @@ Build app macOS native nhẹ ("Dola Lite") tái tạo đúng 1 tính năng của
 | Cài REA 6.7.0 (CLI + MCP) | ✅ Xong. CLI: lệnh `rea`. MCP: đã vào `~/.zcode/cli/config.json` → `mcp.servers.rea` (session mới sẽ auto-connect) |
 | Recon app Dola | ✅ Xong (xem mục 4) |
 | Design spec | ✅ Viết xong, self-review xong, **đã commit `48c229a`**: [docs/superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md](superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md) — user chưa duyệt chính thức |
-| Phase 0 spike | 🔄 Đang chạy ở session `sess_d87f2055...` — kết quả sẽ ghi vào `docs/notes/phase0-findings.md` |
-| Writing-plans (kế hoạch implement) | ⏳ Chờ: user duyệt spec + kết quả spike |
+| Phase 0 spike | ✅ **PASS** (đêm 2026-11-14, session `sess_d87f2055...`) — replay thành công 1 call AI dịch từ terminal; chi tiết đầy đủ: [notes/phase0-findings.md](notes/phase0-findings.md) |
+| Writing-plans (kế hoạch implement) | ⏳ Chờ: user duyệt spec (kết quả spike không đổi thiết kế — API stream OK, khuyến nghị Option A: WKWebView ẩn + JS injection) |
+
+### Tóm tắt kết quả spike (chi tiết trong notes/phase0-findings.md)
+
+- **Endpoint chat:** `POST https://www.dola.com/samantha/chat/completion?<common-params>` (SSE stream qua header `Agw-Js-Conv: str`). API client đầy đủ ở `local_webcontents/extensions/ai-views/static/js/6813.js`.
+- **Auth = cookies same-origin** `.dola.com` (`sessionid`, `sid_guard`… trong `~/Library/Application Support/Cici/Default/Cookies`). KHÔNG cần bearer token.
+- **Rào cuối chống curl thuần:** query params bắt buộc (`aid=495671`, `device_id`, `web_id`…) + `msToken` (cookie) + `a_bogus` (chữ ký anti-bot do web SDK sinh, bind theo path).
+- **Bế tắc đã xác định:** bẻ cookies DB tĩnh = không khả thi (fork custom os_crypt, đã thử 4 keychain items × đủ biến thể); Frida attach bị hardened-runtime chặn.
+- **Chìa khóa vượt:** launch instance Dola Browser riêng với `--user-data-dir=<copy profile> --saman-from-chat=<pid sống> --remote-debugging-port=9222` (bypass cơ chế repair) → điều khiển qua **CDP**: lấy cookies decrypted hoặc gọi API trong page context. Bằng chứng: bot trả lời đúng bản dịch tiếng Việt.
+- **Khuyến nghị Phase 1:** Option A = WKWebView ẩn giữ phiên dola.com + inject JS fetch (không cần bẻ gì, sống sót qua thay đổi chữ ký). Option C (curl thuần) cần port thuật toán `a_bogus` — rủi ro cao, không khuyến nghị v1.
+- Side-effect duy nhất lên account: 1 conversation chat thật chứa câu dịch mẫu (đã ghi rõ trong findings).
 
 ## 4. Facts quan trọng đã recon
 
