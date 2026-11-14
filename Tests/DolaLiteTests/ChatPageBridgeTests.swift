@@ -8,10 +8,13 @@ import Testing
         #expect(js.contains("botSelector"))
     }
 
-    @Test func sendScriptEmbedsEscapedPrompt() {
-        let js = ChatPageBridge.sendScript(prompt: "line1\nline2 \"quoted\"")
-        #expect(!js.contains("line1\nline2 \"quoted\""), "prompt phải được escape/JSON-embedded")
-        #expect(js.contains("\\n"))
+    /// jsString là helper escape dùng khi cần nhúng chuỗi vào JS (dù send path giờ
+    /// gõ thật qua NSResponder nên prompt không còn nhúng vào script).
+    @Test func jsStringEscapesForEmbedding() {
+        let s = "line1\nline2 \"quoted\""
+        let escaped = ChatPageBridge.jsString(s)
+        #expect(!escaped.contains("line1\nline2 \"quoted\""), "chuỗi gốc phải được escape")
+        #expect(escaped.contains("\\n"))
     }
 
     @Test func parsePollResultExtractsTextAndDone() throws {
@@ -36,7 +39,21 @@ import Testing
     @Test func generatedJSSelectorsAreNotQuoteWrapped() {
         let dq_sq = "\u{22}\u{27}" // `" '`
         #expect(!ChatPageBridge.probeScript.contains(dq_sq))
-        #expect(!ChatPageBridge.sendScript(prompt: "x").contains(dq_sq))
+        #expect(!ChatPageBridge.focusAndBaselineScript.contains(dq_sq))
         #expect(ChatPageBridge.probeScript.contains("\u{22}.message-item-robot\u{22}"))
+    }
+
+    /// Fix round 6: send path chỉ focus + baseline — KHÔNG set text/synthetic events
+    /// (bị dola chặn); text được gõ thật qua NSResponder (typePrompt).
+    @Test func focusAndBaselineScriptFocusesOnly() {
+        let js = ChatPageBridge.focusAndBaselineScript
+        #expect(js.contains("__dolaLite"))
+        #expect(js.contains("focus()"))
+        #expect(js.contains("FOCUSED"))
+        #expect(!js.contains("SENT_"))
+        #expect(!js.contains("setter.call"))
+        #expect(!js.contains("KeyboardEvent"))
+        #expect(!js.contains("InputEvent"))
+        #expect(!js.contains(".click()"))
     }
 }

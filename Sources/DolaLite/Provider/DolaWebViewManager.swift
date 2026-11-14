@@ -1,10 +1,17 @@
 import AppKit
 import WebKit
 
+/// NSWindow borderless mặc định canBecomeKey == false → makeKey() vô hiệu hóa.
+/// WKWebView cần window key để WebKit xử lý text input như trusted keyboard input.
+private final class HostKeyWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
 final class DolaWebViewManager: NSObject, WKNavigationDelegate {
     static let shared = DolaWebViewManager()
 
     let webView: WKWebView
+    private var hostWindow: NSWindow?
     private var readyState = false
 
     private override init() {
@@ -83,14 +90,67 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
 
     struct ProbeInfo: Decodable { let editorTag: String; let botSelector: String?; let botCount: Int }
 
+    /// WKWebView phải nằm trong window thật để nhận first responder + NSEvent.
+    /// Off-screen (−2000,−2000): vô hình với user nhưng window còn sống nhận input.
+    /// KHÔNG set alphaValue 0 — một số phiên bản WebKit bỏ event với window alpha 0.
+    @MainActor
+    private func ensureHostWindow() {
+        guard hostWindow == nil else { return }
+        let w = HostKeyWindow(contentRect: NSRect(x: -2000, y: -2000, width: 480, height: 800),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        w.isOpaque = false
+        w.hasShadow = false
+        w.contentView = webView
+        w.orderFrontRegardless()
+        w.makeKey()
+        hostWindow = w
+    }
+
+    /// Gõ prompt bằng input THẬT của macOS (NSResponder) — synthetic DOM events
+    /// (Enter/click/pointer-seq/execCommand) bị editor framework của dola chặn hoàn toàn.
+    /// insertText → text như gõ bàn phím; Return = NSEvent keyCode 36 route đúng
+    /// keyDown→keyDown, keyUp→keyUp theo responder chain.
+    @MainActor
+    func typePrompt(_ prompt: String) async throws {
+        ensureHostWindow()
+        // focus editor trong page (chỉ focus — KHÔNG set text)
+        _ = try? await webView.evaluateJavaScript(
+            "(() => { const ed = document.querySelector('[contenteditable=true]') || document.querySelector('textarea'); if (ed) { ed.focus(); return 'focused'; } return 'no-editor'; })()")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        hostWindow?.makeFirstResponder(webView)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        webView.insertText(prompt)          // NSResponder — text input trusted như bàn phím
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        // Enter thật
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            if let ev = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                timestamp: Date().timeIntervalSinceReferenceDate,
+                windowNumber: hostWindow?.windowNumber ?? 0, context: nil,
+                characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) {
+                switch type {
+                case .keyDown: webView.keyDown(with: ev)
+                case .keyUp:   webView.keyUp(with: ev)
+                default: break
+                }
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
     /// Gửi prompt + stream text từ node bot mới.
+    /// Flow: focus editor + baseline → gõ thật (typePrompt) → poll node bot mới.
     @MainActor
     func runPrompt(_ prompt: String) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 let result = (try? await webView.evaluateJavaScript(
-                    ChatPageBridge.sendScript(prompt: prompt))) as? String ?? "FAIL"
-                guard result == "SENT_CLICK" || result == "SENT_ENTER" else {
+                    ChatPageBridge.focusAndBaselineScript)) as? String ?? "FAIL"
+                guard result == "FOCUSED" else {
+                    continuation.finish(throwing: DolaError.sendFailed); return
+                }
+                do {
+                    try await typePrompt(prompt)
+                } catch {
                     continuation.finish(throwing: DolaError.sendFailed); return
                 }
                 let deadline = Date().addingTimeInterval(Config.streamTimeoutSec)

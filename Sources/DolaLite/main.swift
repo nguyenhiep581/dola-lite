@@ -28,14 +28,11 @@ final class DebugProbeDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
 
     static let js = "JSON.stringify({"
-        + "title: document.title.slice(0, 40),"
         + "bodyLen: document.body ? document.body.innerText.length : -1,"
-        + "ta: document.querySelectorAll('textarea').length,"
-        + "ce: document.querySelectorAll('[contenteditable]').length,"
-        + "inputs: document.querySelectorAll('textarea, [contenteditable], [role=textbox]').length,"
         + "robots: document.querySelectorAll('.message-item-robot, .robot-message, [class*=robot]').length,"
-        + "btns: document.querySelectorAll('button').length,"
-        + "bodyText: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 350)})"
+        + "bodyText: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 160),"
+        + "sendBtns: Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent).map(b => ((b.getAttribute('data-testid')||'') + '|' + (b.getAttribute('aria-label')||'') + '|' + (b.className||'').toString().slice(0,25))).slice(0,10)"
+        + "})"
 
     func applicationDidFinishLaunching(_ n: Notification) {
         let mgr = DolaWebViewManager.shared
@@ -45,12 +42,9 @@ final class DebugProbeDelegate: NSObject, NSApplicationDelegate {
                 var s = "?"
                 do { s = try await mgr.webView.evaluateJavaScript(Self.js) as? String ?? "(non-string)" }
                 catch { s = "JS-ERR: \(error.localizedDescription)" }
-                let u = mgr.webView.url?.absoluteString.prefix(60) ?? "nil"
-                let ti = mgr.webView.title?.prefix(40) ?? "nil"
-                let lo = mgr.webView.isLoading ? "loading" : "idle"
-                print("[debug t+\(self.tick * 3)s] url=\(u) title=\(ti) \(lo) | \(s)")
+                print("[debug t+\(self.tick * 3)s] \(s)")
                 self.tick += 1
-                if self.tick > 10 { t.invalidate(); exit(0) }
+                if self.tick > 14 { t.invalidate(); exit(0) }
             }
         }
     }

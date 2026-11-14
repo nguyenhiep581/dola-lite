@@ -34,38 +34,25 @@ enum ChatPageBridge {
     })()
     """
 
-    /// Cài đặt hàm theo dõi + gửi prompt. Ghi lại số bot nodes trước khi gửi (baseline).
-    /// Thử gửi: (a) DOM events Enter, (b) click nút send nếu tìm thấy.
-    static func sendScript(prompt: String) -> String {
-        """
-        (() => {
-          window.__dolaLite = {baseline: 0, lastText: '', stableCount: 0, selector: null};
-          const S = window.__dolaLite;
-          const bots = \(botSelectors);
-          for (const s of bots) {
-            const n = document.querySelectorAll(s);
-            if (n.length) { S.selector = s; S.baseline = n.length; break; }
-          }
-          const ed = document.querySelector('textarea') || document.querySelector('[contenteditable="true"]');
-          if (!ed) return 'NO_EDITOR';
-          ed.focus();
-          if (ed.tagName === 'TEXTAREA') {
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-            setter.call(ed, \(jsString(prompt)));
-          } else {
-            ed.textContent = \(jsString(prompt));
-          }
-          ed.dispatchEvent(new InputEvent('input', {bubbles: true}));
-          const sendBtn = document.querySelector('button[data-testid="send_button"]')
-            || Array.from(document.querySelectorAll('button,[class*="send"]')).find(b => b.offsetParent);
-          if (sendBtn) { sendBtn.click(); return 'SENT_CLICK'; }
-          const opts = {bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13};
-          ed.dispatchEvent(new KeyboardEvent('keydown', opts));
-          ed.dispatchEvent(new KeyboardEvent('keyup', opts));
-          return 'SENT_ENTER';
-        })()
-        """
-    }
+    /// Focus editor + ghi baseline số bot nodes TRƯỚC khi gửi. KHÔNG set text/Enter/click
+    /// bằng synthetic DOM events — editor framework của dola chỉ nhận trusted input
+    /// (Enter/click/pointer-seq/execCommand đều bị chặn) → prompt được gõ thật qua
+    /// NSResponder (DolaWebViewManager.typePrompt).
+    static let focusAndBaselineScript = """
+    (() => {
+      window.__dolaLite = {baseline: 0, lastText: '', stableCount: 0, selector: null};
+      const S = window.__dolaLite;
+      const bots = \(botSelectors);
+      for (const s of bots) {
+        const n = document.querySelectorAll(s);
+        if (n.length) { S.selector = s; S.baseline = n.length; break; }
+      }
+      const ed = document.querySelector('textarea') || document.querySelector('[contenteditable="true"]');
+      if (!ed) return 'NO_EDITOR';
+      ed.focus();
+      return 'FOCUSED';
+    })()
+    """
 
     /// Poll node bot thứ baseline+1; stable khi text không đổi 2 poll liên tiếp.
     static let pollScript = """
