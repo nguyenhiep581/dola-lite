@@ -106,6 +106,10 @@ enum SessionImporter {
             "Default/GPUCache", "Default/Dawn*", "Default/ShaderCache", "Default/GraphiteDawnCache",
             "Default/Cache", "Default/Code Cache", "Crashpad", "BrowserMetrics*",
             "component_crx_cache", "GrShaderCache",
+            // Fix round 4: Singleton* symlinks trỏ sang socket của browser CHÍNH đang chạy —
+            // browser phụ đọc SingletonLock → tưởng instance khác tồn tại → delegate & exit ngay.
+            // RunningChromeVersion cũng chỉ meaningful cho instance đang chạy.
+            "Singleton*", "RunningChromeVersion",
         ]
         var args = ["-a"]
         for e in excludes { args += ["--exclude", e] }

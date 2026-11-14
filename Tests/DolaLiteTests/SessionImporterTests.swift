@@ -41,4 +41,18 @@ import Testing
         #expect(SessionImporter.mapToHTTPCookie(cdp(name: "n", value: nil, domain: ".dola.com")) == nil)
         #expect(SessionImporter.mapToHTTPCookie(cdp(name: "n", value: "v", domain: nil)) == nil)
     }
+
+    /// Fix round 4: profile copy PHẢI loại Singleton*/RunningChromeVersion — symlinks
+    /// Singleton trỏ sang socket của browser chính, làm browser phụ exit như duplicate instance.
+    @Test func rsyncArgsExcludeSingletonSymlinks() {
+        let args = SessionImporter.rsyncArgs(
+            from: URL(fileURLWithPath: "/tmp/src"), to: URL(fileURLWithPath: "/tmp/dst"))
+        // mọi pattern exclude phải nằm ngay sau một "--exclude" (cặp args liền kề)
+        var pairs: [String] = []
+        for (i, a) in args.enumerated() where i > 0 && args[i - 1] == "--exclude" {
+            pairs.append(a)
+        }
+        #expect(pairs.contains("Singleton*"))
+        #expect(pairs.contains("RunningChromeVersion"))
+    }
 }
