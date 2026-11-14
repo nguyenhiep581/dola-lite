@@ -17,30 +17,45 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
         webView.navigationDelegate = self
     }
 
-    /// Load /chat nếu chưa; sẵn sàng khi có editor VÀ đã login (trang guest vẫn render editor).
-    /// Editor có mà chưa login → throw notLoggedIn ngay, không đợi hết 12s.
+    /// Load /chat nếu chưa; sẵn sàng khi có editor VÀ có session cookie dola.com còn hiệu lực.
+    /// (Trang guest vẫn render editor và body KHÔNG chứa chữ "Log in"/"Đăng nhập" — nút login là
+    /// icon — nên detection bằng DOM text sai; session cookie là nguồn chân lý duy nhất.)
+    /// Editor có mà không có session cookie → throw notLoggedIn ngay, không đợi hết 12s.
     @MainActor
     func ensureReady() async throws {
         if readyState { return }
         if webView.url == nil { webView.load(URLRequest(url: Config.chatURL)) }
         for _ in 0..<40 {                       // 40 × 0.3s = 12s
             try await Task.sleep(nanoseconds: 300_000_000)
-            let probe = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String
-            if let json = probe, let data = json.data(using: .utf8),
-               let info = try? JSONDecoder().decode(ProbeInfo.self, from: data) {
-                if info.editorTag != "none" && info.loggedIn {
-                    readyState = true
-                    return
-                }
-                if info.editorTag != "none" && !info.loggedIn {
-                    throw DolaError.notLoggedIn  // guest state — fail nhanh thay vì timeout 60s
-                }
+            guard let json = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
+                  let data = json.data(using: .utf8),
+                  let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
+                  info.editorTag != "none" else { continue }
+            if Self.hasDolaSession(await Self.allCookies(of: webView)) {
+                readyState = true
+                return
             }
+            throw DolaError.notLoggedIn  // guest state — fail nhanh thay vì timeout 60s
         }
         throw DolaError.notLoggedIn
     }
 
-    struct ProbeInfo: Decodable { let editorTag: String; let botSelector: String?; let botCount: Int; let loggedIn: Bool }
+    /// true khi có session cookie dola.com còn hiệu lực.
+    static func hasDolaSession(_ cookies: [HTTPCookie]) -> Bool {
+        cookies.contains { c in
+            (c.domain.hasSuffix("dola.com")) && ["sessionid", "sid_guard", "sessionid_ss"].contains(c.name)
+        }
+    }
+
+    /// Lấy toàn bộ cookie trong data store của webView (async wrapper của httpCookieStore.getAllCookies).
+    @MainActor
+    static func allCookies(of webView: WKWebView) async -> [HTTPCookie] {
+        await withCheckedContinuation { cont in
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cont.resume(returning: $0) }
+        }
+    }
+
+    struct ProbeInfo: Decodable { let editorTag: String; let botSelector: String?; let botCount: Int }
 
     /// Hiện cửa sổ login (chính webView, tạm visible) tới khi login xong.
     @MainActor
@@ -55,10 +70,11 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
         loginWindow = w
         while !readyState {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            if let s = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
-               let data = s.data(using: .utf8),
-               let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
-               info.editorTag != "none", info.loggedIn { readyState = true }
+            guard let s = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
+                  let data = s.data(using: .utf8),
+                  let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
+                  info.editorTag != "none" else { continue }
+            if Self.hasDolaSession(await Self.allCookies(of: webView)) { readyState = true }
         }
         w.orderOut(nil)   // giữ window sống (webView không dealloc), chỉ ẩn
     }
