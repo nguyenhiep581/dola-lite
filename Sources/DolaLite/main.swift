@@ -64,10 +64,10 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let mgr = DolaWebViewManager.shared
             do {
-                try await mgr.ensureReady()
+                try await mgr.ensureReady()   // tự import session từ profile Dola nếu cần (Amendment A)
             } catch {
-                print("[probe] cần đăng nhập — mở cửa sổ login…")
-                await mgr.presentLoginWindow()
+                print("[probe] LỖI:", error.localizedDescription)
+                exit(2)
             }
             let stream = mgr.runPrompt(Skill.translate.prompt(for: text))
             var out = ""

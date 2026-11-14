@@ -34,7 +34,9 @@ enum DolaError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notLoggedIn: return "Chưa đăng nhập dola.com"
+        // Amendment A: notLoggedIn = không import được session từ profile Dola
+        // (profile chưa login hoặc browser phụ fail) — WKWebView không tự login được.
+        case .notLoggedIn: return "Không nhập được phiên đăng nhập Dola (profile chưa đăng nhập hoặc trình duyệt phụ lỗi)"
         case .pageNotReady: return "Trang chat chưa sẵn sàng"
         case .timeout: return "Hết thời gian chờ phản hồi"
         case .sendFailed: return "Không gửi được prompt vào trang chat"

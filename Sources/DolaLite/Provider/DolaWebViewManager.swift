@@ -5,7 +5,6 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
     static let shared = DolaWebViewManager()
 
     let webView: WKWebView
-    private var loginWindow: NSWindow?
     private var readyState = false
 
     private override init() {
@@ -17,27 +16,54 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
         webView.navigationDelegate = self
     }
 
-    /// Load /chat nếu chưa; sẵn sàng khi có editor VÀ có session cookie dola.com còn hiệu lực.
-    /// (Trang guest vẫn render editor và body KHÔNG chứa chữ "Log in"/"Đăng nhập" — nút login là
-    /// icon — nên detection bằng DOM text sai; session cookie là nguồn chân lý duy nhất.)
-    /// Editor có mà không có session cookie → throw notLoggedIn ngay, không đợi hết 12s.
+    /// Load /chat nếu chưa; sẵn sàng khi có editor VÀ session cookie dola.com còn hiệu lực
+    /// (trang guest vẫn render editor nên editorTag không đủ kết luận login).
+    /// Chưa có session → tự import từ profile Dola (Amendment A) → reload → poll lại tối đa 30s.
     @MainActor
     func ensureReady() async throws {
         if readyState { return }
         if webView.url == nil { webView.load(URLRequest(url: Config.chatURL)) }
+
+        // Phase 1 — 12s: chờ trang lên + editor. Có editor mà chưa session → import.
+        var needImport = false
         for _ in 0..<40 {                       // 40 × 0.3s = 12s
             try await Task.sleep(nanoseconds: 300_000_000)
-            guard let json = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
-                  let data = json.data(using: .utf8),
-                  let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
-                  info.editorTag != "none" else { continue }
+            guard await probeEditor() != nil else { continue }
             if Self.hasDolaSession(await Self.allCookies(of: webView)) {
                 readyState = true
                 return
             }
-            throw DolaError.notLoggedIn  // guest state — fail nhanh thay vì timeout 60s
+            needImport = true
+            break
+        }
+        guard needImport else { throw DolaError.notLoggedIn }  // trang/editor không lên trong 12s
+
+        // Phase 2 — import session từ profile Dola rồi poll lại tối đa 30s.
+        do {
+            try await SessionImporter.importSession(into: webView.configuration.websiteDataStore)
+        } catch {
+            throw DolaError.notLoggedIn  // profile chưa login hoặc browser phụ fail
+        }
+        webView.load(URLRequest(url: Config.chatURL))
+        for _ in 0..<100 {                      // 100 × 0.3s = 30s
+            try await Task.sleep(nanoseconds: 300_000_000)
+            guard await probeEditor() != nil else { continue }
+            if Self.hasDolaSession(await Self.allCookies(of: webView)) {
+                readyState = true
+                return
+            }
         }
         throw DolaError.notLoggedIn
+    }
+
+    /// Probe DOM; trả ProbeInfo khi editor xuất hiện (textarea/contenteditable), nil nếu chưa.
+    @MainActor
+    private func probeEditor() async -> ProbeInfo? {
+        guard let json = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
+              let data = json.data(using: .utf8),
+              let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
+              info.editorTag != "none" else { return nil }
+        return info
     }
 
     /// true khi có session cookie dola.com còn hiệu lực.
@@ -56,28 +82,6 @@ final class DolaWebViewManager: NSObject, WKNavigationDelegate {
     }
 
     struct ProbeInfo: Decodable { let editorTag: String; let botSelector: String?; let botCount: Int }
-
-    /// Hiện cửa sổ login (chính webView, tạm visible) tới khi login xong.
-    @MainActor
-    func presentLoginWindow() async {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "Đăng nhập Dola để dùng Dola Lite"
-        w.contentView = webView
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        loginWindow = w
-        while !readyState {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard let s = (try? await webView.evaluateJavaScript(ChatPageBridge.probeScript)) as? String,
-                  let data = s.data(using: .utf8),
-                  let info = try? JSONDecoder().decode(ProbeInfo.self, from: data),
-                  info.editorTag != "none" else { continue }
-            if Self.hasDolaSession(await Self.allCookies(of: webView)) { readyState = true }
-        }
-        w.orderOut(nil)   // giữ window sống (webView không dealloc), chỉ ẩn
-    }
 
     /// Gửi prompt + stream text từ node bot mới.
     @MainActor
