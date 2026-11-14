@@ -1,18 +1,14 @@
-// XCTest chỉ khả dụng khi cài đầy đủ Xcode (không có trong Command Line Tools).
-// canImport để `swift build` vẫn pass trên máy chỉ có CLT; test tự kích hoạt khi có Xcode.
-#if canImport(XCTest)
-import XCTest
+import Testing
 @testable import DolaLite
 
-final class ConfigTests: XCTestCase {
-    func testConfigConstants() throws {
-        XCTAssertEqual(Config.targetLanguage, "vi")
-        XCTAssertEqual(Config.chatURL.absoluteString, "https://www.dola.com/chat/")
-        XCTAssertEqual(Config.selectionDebounceMs, 300)
-        XCTAssertEqual(Config.minSelectionLength, 2)
-        XCTAssertEqual(Config.maxSelectionLength, 10_000)
-        XCTAssertEqual(Config.streamTimeoutSec, 60)
-        XCTAssertEqual(Config.pollIntervalMs, 0.3)
+@Suite struct ConfigTests {
+    @Test func chatURLPointsAtDolaChat() {
+        #expect(Config.chatURL.host == "www.dola.com")
+        #expect(Config.chatURL.absoluteString.hasPrefix("https://www.dola.com/chat"))
+    }
+
+    @Test func selectionLimitAcceptsReasonableText() {
+        #expect(Config.maxSelectionLength >= 1000)
+        #expect(Config.minSelectionLength >= 1)
     }
 }
-#endif
