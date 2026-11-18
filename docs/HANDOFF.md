@@ -1,96 +1,60 @@
-# HANDOFF — Dola Lite (12_translator)
+# HANDOFF — Dola Lite
 
-- **Cập nhật:** 2026-11-14
-- **Workspace:** `/Users/hiep/Documents/12_translator` (git repo, branch `master`)
-- **Session chính:** `sess_fe500961-c533-40db-90db-acfde849728b`
-- **Session spike (đã giao việc, đang chạy):** `sess_d87f2055-71b4-47f6-b24f-4d5f36639f4f`
+- Cập nhật ngày 2026-11-18
+- Bản tải xuống: `DolaLite-macOS.zip` (ad-hoc signed; đã thử unzip, kiểm tra chữ ký bundle và chạy `--help`).
+- Worktree: `.worktrees/dola-lite-v1` (branch `dola-lite-v1`)
+- Trạng thái: app native đã build; unit/integration tests pass. **Đã xác minh end-to-end thành công với server thật** (translate + summarize qua probe, 2026-11-18 tối). Còn manual Accessibility/UI matrix.
 
----
+## Mục tiêu hiện tại
 
-## 1. Project là gì?
+App macOS menu-bar tái tạo thanh chọn văn bản của Dola bằng UI AppKit tự viết, chỉ gồm **Dịch / Tóm tắt / Giải thích**. Không gọi Dola và không tái sử dụng browser/session của Dola. AI dùng OpenAI-compatible chat completions với cấu hình riêng trong app.
 
-Build app macOS native nhẹ ("Dola Lite") tái tạo đúng 1 tính năng của Dola Browser: **popover tự xuất hiện khi chọn text ở bất kỳ app nào** với 3 kỹ năng **Dịch / Tóm tắt / Giải thích**, gọi thẳng AI backend của Dola bằng session đăng nhập hiện có — không cần mở Dola Browser (Chromium fork rất nặng).
+## Cấu hình API
 
-## 2. Các quyết định đã chốt với user
+- Mặc định Base URL: `https://api.xingchiapi.com/v1`
+- Mặc định model: `gpt-6.1-sol`
+- API key: lưu riêng trong macOS Keychain (item `com.hiep.dolalite.api`), không nằm trong UserDefaults hay bundle.
+- **Không đọc bất kỳ dữ liệu nào của Dola/DSH.** Cơ chế import `XINGCHI_API_KEY` từ `~/.dsh/.credentials.yaml` đã bị xóa hẳn (2026-11-18, theo yêu cầu tách hoàn toàn khỏi Dola); dependency Yams đi kèm cũng đã bỏ. Người dùng tự nhập API key trong cửa sổ **Cài đặt API…** (lần đầu chạy, app tự mở cửa sổ này khi chưa có key).
+- Cửa sổ **Cài đặt API…** cho sửa Base URL/model/key và mức reasoning của Tóm tắt/Giải thích. Dịch luôn gửi `reasoning_effort=low`.
 
-| Quyết định | Lựa chọn |
-|---|---|
-| Trigger popover | Tự động khi chọn text (giống Dola), cần quyền Accessibility |
-| Kỹ năng v1 | Chỉ 3: Dịch, Tóm tắt, Giải thích |
-| Hiển thị kết quả | Popover nhỏ cạnh text, stream realtime (SSE) |
-| Nguồn AI | **Hướng A**: reverse engineer API Dola + tái dùng session; fallback Hướng C (provider khác) chỉ khi spike bế tắc |
+## Trạng thái triển khai
 
-## 3. Trạng thái hiện tại
+- SelectionWatcher dùng Accessibility API, lọc text và debounce 300 ms; pill/result là NSPanel không kích hoạt app nguồn.
+- Result hỗ trợ stream, markdown cơ bản, Copy, Retry, Escape/click ngoài, đổi selection và placement nhiều màn hình.
+- Xingchi provider dùng URLSession streaming, parser SSE incremental và hủy network task khi đóng/yêu cầu mới.
+- **Wire API = `responses`** (2026-11-18): relay Xingchi chặn hẳn `POST /chat/completions` cho mọi client (403 `client_not_allowed` — "site chỉ cho phép client lập trình") và chỉ mở `POST /responses` với **User-Agent thuộc danh sách client được phép** (Codex, Claude Code, Cursor…). App gọi `/responses` với `User-Agent: codex_cli_rs/0.42.0` (constant `APIRequestBuilder.allowedClientUserAgent`), body `{model, stream, instructions, input, reasoning:{effort}}`, parse SSE event `response.output_text.delta` / terminal `response.completed` / `response.incomplete` (max_output_tokens → truncated) / `response.failed`. Khớp `wire_api = "responses"` trong config DSH của user.
+- Probe thật 2026-11-18: translate ("Good morning…" → "Chào buổi sáng. Chúc bạn một ngày tốt lành!") và summarize đều thành công; first_chunk 13–15 s do reasoning phía server trên `gpt-6.1-sol` — relay chậm, không phải lỗi app.
+- `swift test` chạy thành công 37 test, gồm cả ba kỹ năng qua URLSession với phản hồi SSE giả và kiểm tra hủy request thực sự dừng tải. Test Settings dùng `UserDefaults` in-memory (không chạm cfprefsd), hết hẳn rác `DolaLite.SettingsTests.*.plist` trong `~/Library/Preferences`.
+- Release build và `codesign --verify --strict DolaLite.app` đã pass.
+- Án mystery 403 cũ đã đóng: `POST /chat/completions` bị relay chặn vĩnh viễn cho mọi client; không phải lỗi credential/model. API key đã được lưu sẵn trong keychain (item `com.hiep.dolalite.api`) từ lần verify 2026-11-18 — mở app lên là dùng được ngay; muốn đổi key thì dùng nút "Xóa API key" trong Cài đặt rồi nhập key mới.
+- Preview PNG của pill/result đã render ở `/tmp/dolalite-ui-preview`; không thể đánh giá trực quan trong phiên này do model không hỗ trợ ảnh.
+- Chưa cấp/xác minh quyền Accessibility và chưa chạy manual app matrix. Người dùng cần bật quyền cho `DolaLite.app` trong System Settings → Privacy & Security → Accessibility; sau đó dùng menu **Kiểm tra quyền Trợ năng…**.
 
-| Việc | Trạng thái |
-|---|---|
-| Cài REA 6.7.0 (CLI + MCP) | ✅ Xong. CLI: lệnh `rea`. MCP: đã vào `~/.zcode/cli/config.json` → `mcp.servers.rea` (session mới sẽ auto-connect) |
-| Recon app Dola | ✅ Xong (xem mục 4) |
-| Design spec | ✅ Viết xong, self-review xong, **đã commit `48c229a`**: [docs/superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md](superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md) — user chưa duyệt chính thức |
-| Phase 0 spike | ✅ **PASS** (đêm 2026-11-14, session `sess_d87f2055...`) — replay thành công 1 call AI dịch từ terminal; chi tiết đầy đủ: [notes/phase0-findings.md](notes/phase0-findings.md) |
-| Writing-plans (kế hoạch implement) | ⏳ Chờ: user duyệt spec (kết quả spike không đổi thiết kế — API stream OK, khuyến nghị Option A: WKWebView ẩn + JS injection) |
+## Chạy và build
 
-### Tóm tắt kết quả spike (chi tiết trong notes/phase0-findings.md)
+Từ worktree `.worktrees/dola-lite-v1`:
 
-- **Endpoint chat:** `POST https://www.dola.com/samantha/chat/completion?<common-params>` (SSE stream qua header `Agw-Js-Conv: str`). API client đầy đủ ở `local_webcontents/extensions/ai-views/static/js/6813.js`.
-- **Auth = cookies same-origin** `.dola.com` (`sessionid`, `sid_guard`… trong `~/Library/Application Support/Cici/Default/Cookies`). KHÔNG cần bearer token.
-- **Rào cuối chống curl thuần:** query params bắt buộc (`aid=495671`, `device_id`, `web_id`…) + `msToken` (cookie) + `a_bogus` (chữ ký anti-bot do web SDK sinh, bind theo path).
-- **Bế tắc đã xác định:** bẻ cookies DB tĩnh = không khả thi (fork custom os_crypt, đã thử 4 keychain items × đủ biến thể); Frida attach bị hardened-runtime chặn.
-- **Chìa khóa vượt:** launch instance Dola Browser riêng với `--user-data-dir=<copy profile> --saman-from-chat=<pid sống> --remote-debugging-port=9222` (bypass cơ chế repair) → điều khiển qua **CDP**: lấy cookies decrypted hoặc gọi API trong page context. Bằng chứng: bot trả lời đúng bản dịch tiếng Việt.
-- **Khuyến nghị Phase 1:** Option A = WKWebView ẩn giữ phiên dola.com + inject JS fetch (không cần bẻ gì, sống sót qua thay đổi chữ ký). Option C (curl thuần) cần port thuật toán `a_bogus` — rủi ro cao, không khuyến nghị v1.
-- Side-effect duy nhất lên account: 1 conversation chat thật chứa câu dịch mẫu (đã ghi rõ trong findings).
-
-## 4. Facts quan trọng đã recon
-
-- App Dola thật: `/Applications/Cici.app/Contents/Helpers/Dola Browser.app` (trong `Cici.app`, `com.bot.pc.cici` v2.36.8, ByteDance). `/Applications/Dola Browser.app` chỉ là **Alias**.
-- Dola Browser = **Chromium fork v147.0.7727.149** → nặng. Tính năng "Text Selection Toolbar" = pill Dịch/Tóm tắt/Giải thích/Hỏi Dola/AI Tìm kiếm.
-- Paths đáng chú ý:
-  - `.../Dola Browser.app/Contents/Frameworks/Dola Browser Framework.framework/Versions/147.0.7727.149/Resources/resources.pak` (UI JS Chromium)
-  - `.../Dola Browser.app/Contents/Resources/cua/` (`libaha_cua.dylib`, `resources/`)
-  - `.../Dola Browser.app/Contents/XPCServices/AgentInfraService.xpc`
-- Dola Browser thường đang chạy (`Dola Browser Helper` processes).
-- Node: fnm v22.23.3 — REA coi là healthy. `~/.zshenv` có lỗi nhỏ: reference tới `/Users/hiep/.cargo/env` không tồn tại (vô hại, chỉ in warning).
-
-## 5. PROMPT SPIKE — copy-paste vào session mới nếu cần tự chạy
-
-> **Lưu ý:** prompt này Y HỆT cái đã gửi cho session `sess_d87f2055...`. Nếu session đó đã xong thì **đọc `docs/notes/phase0-findings.md` trước** để khỏi làm lại.
-
-```text
-Phase 0 — Feasibility spike cho project "Dola Lite" (trợ lý chọn text macOS). Bạn là session chuyên làm reverse engineering với REA.
-
-# BỐI CẢNH
-Mục tiêu dài hạn: app macOS native nhẹ (Swift) phát hiện text được chọn ở mọi app → popover 3 nút Dịch/Tóm tắt/Giải thích → gọi thẳng AI backend của Dola bằng session đăng nhập hiện có của user, không cần mở Dola Browser.
-
-- Spec đầy đủ (BẮT BUỘC đọc trước): /Users/hiep/Documents/12_translator/docs/superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md
-- App Dola thật: /Applications/Cici.app/Contents/Helpers/Dola Browser.app — Chromium fork v147.0.7727.149, bên trong Cici.app (com.bot.pc.cici v2.36.8, ByteDance). Alias "/Applications/Dola Browser.app" chỉ trỏ tới đó.
-- REA 6.7.0 đã cài: CLI `rea` + MCP server `rea` đã đăng ký trong ~/.zcode/cli/config.json (session mới như bạn sẽ auto-connect — verify xem tools MCP rea hiện hữu không, không thì dùng CLI `rea`).
-- Vài path đáng chú ý đã recon: Resources/cua/ (libaha_cua.dylib), XPCServices/AgentInfraService.xpc, Frameworks/Dola Browser Framework.framework/Versions/147.0.7727.149/Resources/resources.pak
-- Dola Browser CÓ THỂ đang chạy (process "Dola Browser Helper").
-
-# NHIỆM VỤ SPIKE
-1. Verify REA sẵn sàng (MCP hoặc CLI `rea doctor`).
-2. Phân tích TĨNH bằng REA (read-only):
-   a. Extract/inspect resources.pak → tìm JS của "text selection toolbar" (thanh công cụ chọn văn bản), chuỗi kỹ năng ("Dịch", "Tóm tắt", "Giải thích", "Hỏi Dola", "AI Tìm kiếm" hoặc bản English), endpoint API, hostname backend.
-   b. Tìm web bundle / JS app của chat sidebar nếu nằm trong bundle.
-   c. Nếu cần: inspect libaha_cua.dylib, AgentInfraService.xpc.
-3. Xác định nơi Dola lưu session/auth trên máy: profile dir dưới ~/Library/Application Support/ (tìm của Cici/Dola), cookies DB, localStorage, mục Keychain liên quan (CHỈ LIỆT KÊ tên/metadata — không dump giá trị secret ra file).
-4. Nếu tìm được endpoint + auth: thử replay bằng curl một request "dịch đoạn văn mẫu ngắn" dùng session hiện có trên máy (KHÔNG tạo tài khoản, KHÔNG gửi đi bất kỳ mật khẩu nào, KHÔNG ghi secret vào file notes).
-5. GHI KẾT QUẢ vào /Users/hiep/Documents/12_translator/docs/notes/phase0-findings.md gồm: endpoint(s) + method + request/response format, cơ chế auth (loại token/cookie, header), đường dẫn storage session, kết luận khả thi hay bế tắc + đã thử gì.
-6. RÀNG BUỘC: tuyệt đối read-only với app Dola (không sửa file, không kill process); không làm thay đổi trạng thái tài khoản user; mọi phát hiện secret chỉ ghi "đã xác nhận tồn tại tại X" chứ không ghi giá trị.
-
-# TIÊU CHÍ THÀNH CÔNG
-Replay được ít nhất 1 call API AI của Dola từ terminal trả kết quả hợp lệ. Nếu bế tắc: báo cáo rõ ngõ cụ thể (vd: cert pinning + không tìm thấy endpoint trong pak) để session chính quyết định fallback.
+```sh
+swift test
+bash scripts/make-app.sh
+open DolaLite.app
 ```
 
-## 6. Bước tiếp theo (theo thứ tự)
+Probe provider (gửi nội dung thật tới endpoint đã cấu hình, có thể tính phí):
 
-1. Đọc `docs/notes/phase0-findings.md` (kết quả từ session spike).
-2. User **duyệt spec** (sửa nếu spike phát hiện điều gì thay đổi thiết kế — ví dụ API không stream được thì đổi cơ chế hiển thị).
-3. Session chính (hoặc session mới) chạy skill **superpowers:writing-plans** để lập implementation plan chi tiết từ spec + findings.
-4. Implement theo plan: Phase 1 = skeleton app Swift (SelectionWatcher + PopoverUI + DolaProvider stub) → Phase 2 = DolaProvider thật từ findings → Phase 3 = polish (onboarding quyền Accessibility, notification hết session).
+```sh
+./DolaLite.app/Contents/MacOS/DolaLite --probe "Good morning." --skill translate
+```
 
-## 7. Lưu ý an toàn
+Có thể chọn `summarize` hoặc `explain`. Kết quả probe in theo từng chunk; stderr hiển thị model, skill, effort và latency, không in API key.
 
-- Không dán mật khẩu/tokens vào chat hoặc ghi vào file trong repo.
-- Tool mang tính cá nhân: dùng session của chính user, không chia sẻ binary kèm token.
-- Read-only với app Dola; không phân phối lại tài sản của Dola.
+## Tài liệu
+
+- Thiết kế hiện hành: `docs/superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md`
+- Kế hoạch Xingchi: `docs/superpowers/plans/2026-11-15-xingchi-native-v1.md`
+- Thử nghiệm Dola cũ được lưu trong `Archive/DolaBrowserSpike/`; ghi nhận gốc ở `docs/notes/phase0-findings.md` và `docs/notes/2026-11-15-cdp-input-investigation.md` chỉ có giá trị lịch sử, không phải runtime hiện hành.
+
+## Việc còn lại
+
+1. Xác minh thủ công selection/pill/result, cấp Accessibility, các hành vi dismiss/copy/retry, light/dark và màn hình phụ.
+2. (Tùy chọn) Nếu đổi UA `codex_cli_rs` bị relay chặn trong tương lai, đổi constant `APIRequestBuilder.allowedClientUserAgent` sang client khác trong danh sách được phép.

@@ -34,12 +34,28 @@ enum ChatPageBridge {
     })()
     """
 
-    /// Focus editor + ghi baseline số bot nodes TRƯỚC khi gửi. KHÔNG set text/Enter/click
-    /// bằng synthetic DOM events — editor framework của dola chỉ nhận trusted input
-    /// (Enter/click/pointer-seq/execCommand đều bị chặn) → prompt được gõ thật qua
-    /// NSResponder (DolaWebViewManager.typePrompt).
+    /// Chờ editor thật thay textarea tạm trong lúc hydrate. Trang còn có thể reload
+    /// khi áp dụng locale; chỉ báo ready khi cùng editor visible ổn định 3 giây.
+    /// Text/Enter vẫn được gửi qua CDP sau khi xác nhận focus thực tế.
     static let focusAndBaselineScript = """
     (() => {
+      const ed = document.querySelector('.tiptap.ProseMirror[contenteditable="true"]');
+      const style = ed && getComputedStyle(ed);
+      if (document.readyState !== 'complete' || !ed || !ed.isConnected ||
+          !ed.isContentEditable || style.display === 'none' || style.visibility !== 'visible' ||
+          ed.getBoundingClientRect().width <= 0 || ed.getBoundingClientRect().height <= 0) {
+        delete window.__dolaLiteEditorReady;
+        return 'NO_EDITOR';
+      }
+      const now = performance.now();
+      const previous = window.__dolaLiteEditorReady;
+      if (!previous || previous.editor !== ed) {
+        window.__dolaLiteEditorReady = {editor: ed, since: now};
+        return 'EDITOR_SETTLING';
+      }
+      if (now - previous.since < 3000) return 'EDITOR_SETTLING';
+      ed.focus();
+      if (document.activeElement !== ed || !document.hasFocus()) return 'NO_FOCUS';
       window.__dolaLite = {baseline: 0, lastText: '', stableCount: 0, selector: null};
       const S = window.__dolaLite;
       const bots = \(botSelectors);
@@ -47,9 +63,6 @@ enum ChatPageBridge {
         const n = document.querySelectorAll(s);
         if (n.length) { S.selector = s; S.baseline = n.length; break; }
       }
-      const ed = document.querySelector('textarea') || document.querySelector('[contenteditable="true"]');
-      if (!ed) return 'NO_EDITOR';
-      ed.focus();
       return 'FOCUSED';
     })()
     """
@@ -59,6 +72,13 @@ enum ChatPageBridge {
     (() => {
       const S = window.__dolaLite;
       if (!S) return JSON.stringify({exists:false, text:'', stable:false, found:false});
+      if (!S.selector) {
+        // Chat trống: chỉ nhận node được đánh dấu là bot, tránh lấy prompt của user.
+        for (const selector of ['.message-item-robot', '.robot-message']) {
+          if (document.querySelectorAll(selector).length) { S.selector = selector; break; }
+        }
+      }
+      if (!S.selector) return JSON.stringify({exists:false, text:'', stable:false, found:false});
       const nodes = document.querySelectorAll(S.selector);
       if (nodes.length <= S.baseline) return JSON.stringify({exists:false, text:'', stable:false, found:false});
       const text = (nodes[S.baseline].innerText || '').trim();
