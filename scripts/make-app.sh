@@ -24,6 +24,12 @@ with open(sys.argv[1],'wb') as out:
       'NSAccessibilityUsageDescription':'Dola Lite đọc đoạn văn bản bạn chọn để dịch, tóm tắt và giải thích.',
     },out,sort_keys=False)
 PY
-codesign --force --sign - "$APP_DIR"
+# Ký bằng identity tự tạo ổn định nếu có: TCC (Accessibility…) gắn với certificate
+# thay vì cdhash, nên rebuild không bị mất quyền. Fallback ad-hoc nếu chưa có cert.
+if security find-identity -p codesigning | grep -q '"DolaLite Dev"'; then
+  codesign --force --sign "DolaLite Dev" "$APP_DIR"
+else
+  codesign --force --sign - "$APP_DIR"
+fi
 codesign --verify --strict "$APP_DIR"
 printf 'Built: %s\n' "$APP_DIR"

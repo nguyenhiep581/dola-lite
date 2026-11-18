@@ -14,6 +14,28 @@ final class ResultPanel: NSPanel {
     private(set) var fullText = ""
     private var pendingRender: Task<Void, Never>?
     private var isStreaming = false
+    // First-token latency varies widely with the relay (2–20 s); a live
+    // seconds counter keeps the wait legible instead of a frozen status.
+    private var elapsedTimer: Timer?
+    private var startedAt: Date?
+    private var waitingPhrase = "Đang chuẩn bị…"
+
+    private func startElapsedCounter() {
+        elapsedTimer?.invalidate()
+        startedAt = Date()
+        statusLabel.stringValue = waitingPhrase
+        elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isStreaming, self.fullText.isEmpty, let startedAt = self.startedAt else { return }
+                self.statusLabel.stringValue = "\(self.waitingPhrase) \(Int(Date().timeIntervalSince(startedAt)))s"
+            }
+        }
+    }
+
+    private func stopElapsedCounter() {
+        elapsedTimer?.invalidate()
+        elapsedTimer = nil
+    }
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 390, height: 350),
@@ -48,11 +70,21 @@ final class ResultPanel: NSPanel {
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.frame = NSRect(x: 0, y: 0, width: 365, height: 1)
-        textView.autoresizingMask = [.width]
+        // Geometry is pinned explicitly in syncContainerWidth(); autoresizing
+        // on a document view inside NSClipView doubles the width (733=2×365+3).
+        textView.autoresizingMask = []
         textView.textContainerInset = NSSize(width: 3, height: 4)
-        textView.textContainer?.widthTracksTextView = true
+        // Wrap width is driven explicitly (see syncContainerWidth): the
+        // container-in-scrollview tracking feedback loop inflates the width
+        // to the longest line and enables horizontal scrolling.
+        textView.textContainer?.widthTracksTextView = false
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.horizontalScrollElasticity = .none
+        // Overlay scrollers never change the clip width, so the pinned wrap
+        // width stays valid for the panel's lifetime.
+        scrollView.scrollerStyle = .overlay
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -110,20 +142,35 @@ final class ResultPanel: NSPanel {
         isStreaming = true
         titleLabel.stringValue = skill.displayName
         textView.textStorage?.setAttributedString(NSAttributedString(string: ""))
-        statusLabel.stringValue = "Đang chuẩn bị…"
+        let verb = skill.displayName.prefix(1).lowercased() + skill.displayName.dropFirst()
+        waitingPhrase = "Đang \(verb)…"
         statusLabel.textColor = .secondaryLabelColor
         copyButton.isEnabled = false
         retryButton.isHidden = true
         spinner.startAnimation(nil)
+        startElapsedCounter()
         setFrame(PanelPlacement.frame(size: NSSize(width: 390, height: 350), anchor: rect,
                                       mouseLocation: NSEvent.mouseLocation, screens: NSScreen.screens.map(\.visibleFrame)), display: true)
+        syncContainerWidth()
         orderFrontRegardless()
+    }
+
+    /// Pin the wrap width to the visible scroll width. The panel is fixed-size,
+    /// so this runs once per show — no tracking, no feedback loop.
+    private func syncContainerWidth() {
+        scrollView.layoutSubtreeIfNeeded()
+        let clipWidth = scrollView.contentView.bounds.width
+        let width = clipWidth - textView.textContainerInset.width * 2
+        guard width > 50 else { return }
+        textView.frame.size.width = clipWidth
+        textView.textContainer?.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
     }
 
     func append(_ chunk: String) {
         guard !chunk.isEmpty else { return }
         fullText += chunk
         spinner.stopAnimation(nil)
+        stopElapsedCounter()
         statusLabel.stringValue = "Đang trả lời…"
         copyButton.isEnabled = true
         guard pendingRender == nil else { return }
@@ -140,6 +187,7 @@ final class ResultPanel: NSPanel {
         pendingRender?.cancel(); pendingRender = nil
         render()
         spinner.stopAnimation(nil)
+        stopElapsedCounter()
         statusLabel.stringValue = "Đã hoàn tất"
         copyButton.isEnabled = !fullText.isEmpty
     }
@@ -149,6 +197,7 @@ final class ResultPanel: NSPanel {
         pendingRender?.cancel(); pendingRender = nil
         render()
         spinner.stopAnimation(nil)
+        stopElapsedCounter()
         statusLabel.stringValue = message
         statusLabel.textColor = .systemRed
         retryButton.isHidden = false
@@ -159,6 +208,7 @@ final class ResultPanel: NSPanel {
         pendingRender?.cancel(); pendingRender = nil
         isStreaming = false
         spinner.stopAnimation(nil)
+        stopElapsedCounter()
         orderOut(nil)
     }
 

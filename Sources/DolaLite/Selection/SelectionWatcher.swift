@@ -4,7 +4,7 @@ import ApplicationServices
 @MainActor
 final class SelectionWatcher {
     var onSelection: ((SelectionSnapshot?) -> Void)?
-    private var timer: Timer?
+    private var pollTask: Task<Void, Never>?
     private var appObserver: NSObjectProtocol?
     private var debouncer: SelectionDebouncer
     private let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -14,7 +14,8 @@ final class SelectionWatcher {
     }
 
     func start() {
-        guard timer == nil else { return }
+        guard pollTask == nil else { return }
+        let ownPID = self.ownPID
         appObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -23,18 +24,36 @@ final class SelectionWatcher {
             Task { @MainActor [weak self] in
                 guard let self, pid != self.ownPID else { return }
                 self.clear()
-                self.poll()
             }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.poll() }
+        pollTask = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                // Chromium-family apps (Chrome, VS Code, Cursor, Kiro) answer AX
+                // queries over IPC and can need far more than one runloop tick,
+                // so polling must run off the main thread with a patient timeout.
+                let front: (pid: pid_t, primaryTop: CGFloat)? = await MainActor.run {
+                    guard let front = NSWorkspace.shared.frontmostApplication,
+                          front.processIdentifier != ownPID else { return nil }
+                    return (front.processIdentifier, NSScreen.screens.first?.frame.maxY ?? 0)
+                }
+                let snapshot = front.flatMap { Self.readSelection(pid: $0.pid, primaryTop: $0.primaryTop) }
+                let uptime = ProcessInfo.processInfo.systemUptime
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    guard AXIsProcessTrusted() else { self.clear(); return }
+                    guard front != nil else { self.clear(); return }
+                    if let change = self.debouncer.observe(snapshot, at: uptime) {
+                        self.onSelection?(change.snapshot)
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
         }
-        poll()
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        pollTask?.cancel()
+        pollTask = nil
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
         appObserver = nil
         clear()
@@ -46,21 +65,13 @@ final class SelectionWatcher {
         if hadSelection { onSelection?(nil) }
     }
 
-    private func poll() {
-        guard AXIsProcessTrusted() else { clear(); return }
-        guard let front = NSWorkspace.shared.frontmostApplication else { clear(); return }
-        // A result text view may become key for selection/copy without replacing the source selection.
-        guard front.processIdentifier != ownPID else { return }
-        let snapshot = readSelection(pid: front.processIdentifier)
-        if let change = debouncer.observe(snapshot, at: ProcessInfo.processInfo.systemUptime) {
-            onSelection?(change.snapshot)
-        }
-    }
-
-    private func readSelection(pid: pid_t) -> SelectionSnapshot? {
+    /// Synchronous AX reads are thread-safe; called from the background poll task.
+    nonisolated private static func readSelection(pid: pid_t, primaryTop: CGFloat) -> SelectionSnapshot? {
         let application = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(application, 0.15)
-        guard let focusedValue = attribute(application, kAXFocusedUIElementAttribute),
+        AXUIElementSetMessagingTimeout(application, 1.2)
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success,
+              let focusedValue,
               CFGetTypeID(focusedValue) == AXUIElementGetTypeID() else { return nil }
         let focused = unsafeBitCast(focusedValue, to: AXUIElement.self)
         if attribute(focused, kAXSubroleAttribute) as? String == kAXSecureTextFieldSubrole { return nil }
@@ -83,7 +94,6 @@ final class SelectionWatcher {
                     if AXValueGetType(rectValue) == .cgRect, AXValueGetValue(rectValue, .cgRect, &rect),
                        !rect.isEmpty, !rect.isInfinite, !rect.isNull {
                         // AX uses the main display's top-left origin for the entire virtual desktop.
-                        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
                         bounds = NSRect(x: rect.minX, y: primaryTop - rect.maxY, width: rect.width, height: rect.height)
                     }
                 }
@@ -92,7 +102,7 @@ final class SelectionWatcher {
         return SelectionSnapshot(text: text, bounds: bounds, sourcePID: pid, range: selectedRange)
     }
 
-    private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    nonisolated private static func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         var result: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success ? result : nil
     }

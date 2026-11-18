@@ -3,16 +3,17 @@ import Testing
 @testable import DolaLite
 
 @Suite struct APIRequestBuilderTests {
-    private let configuration = APIConfiguration(
-        baseURL: "https://api.example.test/v1/",
-        model: "fixture-model",
-        reasoningEffort: "high"
-    )
+    private func configuration(wire: String) -> APIConfiguration {
+        APIConfiguration(baseURL: "https://api.example.test/v1/",
+                         model: "fixture-model",
+                         reasoningEffort: "high",
+                         wireAPI: wire)
+    }
 
     @Test(arguments: [Skill.translate, .summarize, .explain])
-    func buildsSafeStreamingRequest(for skill: Skill) throws {
+    func buildsSafeStreamingResponsesRequest(for skill: Skill) throws {
         let request = try APIRequestBuilder.request(
-            snapshot: APICredentialsSnapshot(configuration: configuration, apiKey: "fixture-key"),
+            snapshot: APICredentialsSnapshot(configuration: configuration(wire: APIConfiguration.responsesWire), apiKey: "fixture-key"),
             skill: skill,
             text: "Xin chào 🌿\n世界"
         )
@@ -26,16 +27,46 @@ import Testing
         #expect(object["model"] as? String == "fixture-model")
         #expect(object["stream"] as? Bool == true)
         #expect(object["input"] as? String == "Xin chào 🌿\n世界")
-        #expect((object["instructions"] as? String)?.contains("tiếng Việt") == true)
+        #expect((object["instructions"] as? String)?.contains(Self.roleKeyword(skill)) == true)
         let reasoning = try #require(object["reasoning"] as? [String: String])
         #expect(reasoning["effort"] == (skill == .translate ? "low" : "high"))
         #expect(object["messages"] == nil)
     }
 
+    @Test(arguments: [Skill.translate, .summarize, .explain])
+    func buildsSafeStreamingChatRequest(for skill: Skill) throws {
+        let request = try APIRequestBuilder.request(
+            snapshot: APICredentialsSnapshot(configuration: configuration(wire: APIConfiguration.chatWire), apiKey: "fixture-key"),
+            skill: skill,
+            text: "Xin chào 🌿\n世界"
+        )
+        #expect(request.url?.absoluteString == "https://api.example.test/v1/chat/completions")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
+        #expect(request.value(forHTTPHeaderField: "User-Agent") == APIRequestBuilder.allowedClientUserAgent)
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["model"] as? String == "fixture-model")
+        #expect(object["stream"] as? Bool == true)
+        #expect(object["reasoning"] == nil)
+        let messages = try #require(object["messages"] as? [[String: String]])
+        #expect(messages.count == 2)
+        #expect(messages[0]["role"] == "system")
+        #expect(messages[0]["content"]?.contains(Self.roleKeyword(skill)) == true)
+        #expect(messages[1] == ["role": "user", "content": "Xin chào 🌿\n世界"])
+    }
+
+    private static func roleKeyword(_ skill: Skill) -> String {
+        switch skill {
+        case .translate: return "translator"
+        case .summarize: return "summarizer"
+        case .explain: return "teacher"
+        }
+    }
+
     @Test func rejectsUnsafeKeyWithoutPuttingItIntoTheRequest() {
         #expect(throws: APISettingsError.invalidAPIKey) {
             try APIRequestBuilder.request(
-                snapshot: APICredentialsSnapshot(configuration: configuration, apiKey: "fixture\r\nInjected: value"),
+                snapshot: APICredentialsSnapshot(configuration: configuration(wire: APIConfiguration.chatWire), apiKey: "fixture\r\nInjected: value"),
                 skill: .translate,
                 text: "fixture"
             )
@@ -100,6 +131,28 @@ import Testing
         var decoder = APISSEDecoder()
         _ = try decoder.append(Data("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n".utf8))
         #expect(throws: APIProviderError.incompleteResponse) { try decoder.finish() }
+    }
+
+    // MARK: - Chat Completions wire (NVIDIA NIM, api.openai.com, …)
+
+    @Test func decodesChatDeltasAndFinishReason() throws {
+        var decoder = APISSEDecoder()
+        let wire = Data("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Xin \"}}]}\n\n".utf8)
+            + Data(": keepalive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"chào\"}}]}\n\n".utf8)
+            + Data("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".utf8)
+        let output = try decoder.append(wire)
+        try decoder.finish()
+        #expect(output == ["Xin ", "chào"])
+        #expect(decoder.isTerminal)
+    }
+
+    @Test func chatUsageOnlyFramesIgnoredAndTruncationRejected() throws {
+        var decoder = APISSEDecoder()
+        #expect(try decoder.append(Data("data: {\"choices\":[],\"usage\":{\"total_tokens\":7}}\n\n".utf8)).isEmpty)
+        #expect(try decoder.append(Data("data: {\"choices\":[{\"delta\":{\"reasoning\":\"secret\"}}]}\n\n".utf8)).isEmpty)
+        #expect(throws: APIProviderError.truncatedResponse) {
+            _ = try decoder.append(Data("data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n".utf8))
+        }
     }
 }
 

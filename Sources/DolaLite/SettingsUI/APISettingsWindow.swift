@@ -8,6 +8,7 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
     // Ô text thường (không phải ô mật khẩu) để paste và kiểm tra key dài bằng mắt.
     private let keyField = NSTextField()
     private let effortPicker = NSPopUpButton()
+    private let wirePicker = NSPopUpButton()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let testButton = NSButton(title: "Kiểm tra kết nối", target: nil, action: nil)
     private var testTask: Task<Void, Never>?
@@ -16,7 +17,7 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
 
     init(store: APISettingsStore) {
         self.store = store
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 440),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 470),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Cài đặt API — Dola Lite"
         window.isReleasedWhenClosed = false
@@ -34,8 +35,9 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         modelField.stringValue = config.model
         keyField.stringValue = ""
         effortPicker.selectItem(withTitle: config.reasoningEffort)
+        wirePicker.selectItem(withTitle: Self.wireTitles[config.wireAPI] ?? APIConfiguration.chatWire)
         updateKeyPlaceholder()
-        status.stringValue = store.initializationError ?? (store.hasAPIKey ? "API key đã được lưu trong Keychain." : "Chưa có API key. Nhập key để bắt đầu.")
+        status.stringValue = store.initializationError ?? (store.hasAPIKey ? "API key đã được lưu trên máy (file riêng tư)." : "Chưa có API key. Nhập key để bắt đầu.")
         window?.center()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -78,6 +80,11 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         addField("Base URL", field: baseURLField, to: stack)
         addField("Model", field: modelField, to: stack)
         addField("API key", field: keyField, to: stack)
+        wirePicker.addItems(withTitles: [Self.wireTitles[APIConfiguration.chatWire]!,
+                                         Self.wireTitles[APIConfiguration.responsesWire]!])
+        let wireRow = NSStackView(views: [NSTextField(labelWithString: "Kiểu API"), wirePicker])
+        wireRow.spacing = 12
+        stack.addArrangedSubview(wireRow)
         effortPicker.addItems(withTitles: ["low", "medium", "high"])
         let effortRow = NSStackView(views: [NSTextField(labelWithString: "Tóm tắt / Giải thích"), effortPicker])
         effortRow.spacing = 12
@@ -105,8 +112,8 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         baseURLField.delegate = self
         modelField.delegate = self
         keyField.delegate = self
-        baseURLField.placeholderString = "https://api.xingchiapi.com/v1"
-        modelField.placeholderString = "gpt-6.1-sol"
+        baseURLField.placeholderString = "https://integrate.api.nvidia.com/v1"
+        modelField.placeholderString = "nvidia/nemotron-3.5-bolt-e4b"
     }
 
     private func addField(_ label: String, field: NSTextField, to stack: NSStackView) {
@@ -121,10 +128,16 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         field.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
     }
 
+    private static let wireTitles = [APIConfiguration.chatWire: "Chat Completions",
+                                     APIConfiguration.responsesWire: "Responses (Xingchi)"]
+
     private func draft() -> APIConfiguration {
-        APIConfiguration(baseURL: baseURLField.stringValue,
-                         model: modelField.stringValue,
-                         reasoningEffort: effortPicker.titleOfSelectedItem ?? "high")
+        let wireTitle = wirePicker.titleOfSelectedItem ?? Self.wireTitles[APIConfiguration.chatWire]!
+        let wire = Self.wireTitles.first { $0.value == wireTitle }?.key ?? APIConfiguration.chatWire
+        return APIConfiguration(baseURL: baseURLField.stringValue,
+                                model: modelField.stringValue,
+                                reasoningEffort: effortPicker.titleOfSelectedItem ?? "high",
+                                wireAPI: wire)
     }
 
     private func updateKeyPlaceholder() {

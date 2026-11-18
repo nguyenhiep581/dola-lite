@@ -13,8 +13,10 @@ struct APIRequestBuilder {
         guard !key.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
             throw APISettingsError.invalidAPIKey
         }
-        // Wire API "responses": relay chặn hẳn /chat/completions cho mọi client.
-        guard let url = URL(string: configuration.baseURL + "/responses") else {
+        // "chat" = Chat Completions chuẩn OpenAI (NVIDIA NIM, api.openai.com…);
+        // "responses" = Responses API (relay Xingchi chặn hẳn /chat/completions).
+        let path = configuration.wireAPI == APIConfiguration.responsesWire ? "/responses" : "/chat/completions"
+        guard let url = URL(string: configuration.baseURL + path) else {
             throw APISettingsError.invalidBaseURL
         }
         var request = URLRequest(url: url)
@@ -24,13 +26,28 @@ struct APIRequestBuilder {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": configuration.model,
-            "stream": true,
-            "instructions": skill.systemPrompt,
-            "input": text,
-            "reasoning": ["effort": skill == .translate ? "low" : configuration.reasoningEffort]
-        ])
+        let body: [String: Any]
+        if configuration.wireAPI == APIConfiguration.responsesWire {
+            body = [
+                "model": configuration.model,
+                "stream": true,
+                "instructions": skill.systemPrompt,
+                "input": text,
+                "reasoning": ["effort": skill == .translate ? "low" : configuration.reasoningEffort]
+            ]
+        } else {
+            // Không gửi reasoning_effort trên chat wire: nhiều nhà cung cấp
+            // (NVIDIA NIM) từ chối tham số lạ — flash model vốn đã nhanh.
+            body = [
+                "model": configuration.model,
+                "stream": true,
+                "messages": [
+                    ["role": "system", "content": skill.systemPrompt],
+                    ["role": "user", "content": text]
+                ]
+            ]
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
 }

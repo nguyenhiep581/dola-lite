@@ -80,11 +80,22 @@ struct APISSEDecoder {
             return
         }
         guard let bytes = payload.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              let type = object["type"] as? String else {
+              let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
             throw APIProviderError.malformedStream
         }
         if object["error"] != nil { throw APIProviderError.serverError }
+        // Responses wire đánh dấu payload bằng "type"; chat wire dùng "choices".
+        if let type = object["type"] as? String {
+            try consumeResponsesEvent(type: type, object: object, into: &output)
+        } else if object["choices"] != nil {
+            try consumeChatEvent(object: object, into: &output)
+        } else {
+            throw APIProviderError.malformedStream
+        }
+    }
+
+    /// OpenAI Responses API (relay Xingchi): text trong "delta" của từng event.
+    private mutating func consumeResponsesEvent(type: String, object: [String: Any], into output: inout [String]) throws {
         switch type {
         case "response.output_text.delta":
             // Text chunks arrive one per event; other content types (reasoning,
@@ -106,6 +117,31 @@ struct APISSEDecoder {
             // Lifecycle/structural events (created, queued, in_progress,
             // output_item.added, content_part.added, audio, …) carry no user text.
             break
+        }
+    }
+
+    /// OpenAI Chat Completions (NVIDIA NIM, api.openai.com, …).
+    private mutating func consumeChatEvent(object: [String: Any], into output: inout [String]) throws {
+        guard let choices = object["choices"] as? [[String: Any]] else {
+            throw APIProviderError.malformedStream
+        }
+        // Usage-only frames have an empty choices array. Other choices are
+        // alternatives, not continuations; display only index zero.
+        guard let choice = choices.first(where: { ($0["index"] as? Int ?? 0) == 0 }) else { return }
+        if let delta = choice["delta"] as? [String: Any] {
+            if let content = delta["content"], !(content is NSNull) {
+                guard let text = content as? String else { throw APIProviderError.malformedStream }
+                if !text.isEmpty {
+                    hasVisibleContent = hasVisibleContent || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    output.append(text)
+                }
+            }
+        }
+        if let reason = choice["finish_reason"], !(reason is NSNull) {
+            guard let reason = reason as? String, !reason.isEmpty else { throw APIProviderError.malformedStream }
+            if reason == "length" { throw APIProviderError.truncatedResponse }
+            if reason == "error" { throw APIProviderError.serverError }
+            isTerminal = true
         }
     }
 }

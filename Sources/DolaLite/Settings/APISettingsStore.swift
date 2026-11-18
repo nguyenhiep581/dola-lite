@@ -1,6 +1,4 @@
 import Foundation
-import LocalAuthentication
-import Security
 
 @MainActor
 protocol APIKeyStore {
@@ -9,54 +7,61 @@ protocol APIKeyStore {
     func delete() throws
 }
 
+/// Stores the API key in a plain 0600 file (same model as ~/.dsh credentials).
+/// The app is ad-hoc signed and rebuilt often; a Keychain item would prompt
+/// for access after every rebuild because the code signature changed.
 @MainActor
-final class KeychainAPIKeyStore: APIKeyStore {
-    static let service = "com.hiep.dolalite.api"
-    static let account = "api-key"
+final class FileAPIKeyStore: APIKeyStore {
+    private let fileURL: URL
+    private let fileManager = FileManager.default
 
-    private var identity: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: Self.service,
-         kSecAttrAccount as String: Self.account]
+    init(directory: URL? = nil) {
+        let base = directory
+            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("DolaLite", isDirectory: true)
+        fileURL = base.appendingPathComponent("api-key")
     }
 
     func read() throws -> String? {
-        var query = identity
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        // A background status check must never trigger a Keychain login prompt.
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        query[kSecUseAuthenticationContext as String] = context
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw APISettingsError.keychainFailure(status) }
-        guard let data = result as? Data, let key = String(data: data, encoding: .utf8), !key.isEmpty else {
-            throw APISettingsError.invalidCredentialData
+        guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
+        do {
+            let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
+            guard let size = attributes[.size] as? NSNumber, size.intValue <= 1_048_576 else {
+                throw APISettingsError.storageFailure
+            }
+            let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+            guard data.count <= 1_048_576, let raw = String(data: data, encoding: .utf8) else {
+                throw APISettingsError.storageFailure
+            }
+            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return key.isEmpty ? nil : key
+        } catch let error as APISettingsError {
+            throw error
+        } catch {
+            throw APISettingsError.storageFailure
         }
-        return key
     }
 
     func save(_ apiKey: String) throws {
-        let data = Data(apiKey.utf8)
-        let attributes = [kSecValueData as String: data]
-        let status = SecItemUpdate(identity as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = identity
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let addStatus = SecItemAdd(item as CFDictionary, nil)
-            guard addStatus == errSecSuccess else { throw APISettingsError.keychainFailure(addStatus) }
-        } else if status != errSecSuccess {
-            throw APISettingsError.keychainFailure(status)
+        let directory = fileURL.deletingLastPathComponent()
+        do {
+            if !fileManager.fileExists(atPath: directory.path) {
+                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+            }
+            try Data(apiKey.utf8).write(to: fileURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        } catch {
+            throw APISettingsError.storageFailure
         }
     }
 
     func delete() throws {
-        let status = SecItemDelete(identity as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw APISettingsError.keychainFailure(status)
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+        do {
+            try fileManager.removeItem(at: fileURL)
+        } catch {
+            throw APISettingsError.storageFailure
         }
     }
 }
@@ -73,7 +78,7 @@ final class APISettingsStore {
     init(defaults: UserDefaults = .standard,
          keyStore: (any APIKeyStore)? = nil) {
         self.defaults = defaults
-        self.keyStore = keyStore ?? KeychainAPIKeyStore()
+        self.keyStore = keyStore ?? FileAPIKeyStore()
         if let data = defaults.data(forKey: Self.configurationDefaultsKey) {
             do {
                 configuration = try JSONDecoder().decode(APIConfiguration.self, from: data).validated()
@@ -100,7 +105,7 @@ final class APISettingsStore {
     }
 
     /// An empty key field keeps the existing key, allowing endpoint/model-only edits.
-    /// The fallible Keychain write precedes preferences, so a denied write changes neither.
+    /// The fallible key write precedes preferences, so a denied write changes neither.
     func save(configuration: APIConfiguration, apiKey: String) throws {
         let validated = try configuration.validated()
         let encoded = try JSONEncoder().encode(validated)

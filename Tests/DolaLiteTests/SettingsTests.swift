@@ -24,6 +24,28 @@ import Testing
         let original = APIConfiguration(baseURL: "http://localhost:8123/v1", model: "fixture", reasoningEffort: "medium")
         #expect(try JSONDecoder().decode(APIConfiguration.self, from: JSONEncoder().encode(original)) == original)
     }
+
+    @Test func rejectsUnknownWireAPI() {
+        #expect(throws: APISettingsError.invalidWireAPI) {
+            try APIConfiguration(wireAPI: "graphql").validated()
+        }
+    }
+
+    @Test func decodingLegacyConfigWithoutWireDefaultsToResponses() throws {
+        // Cấu hình đã lưu từ thời relay Xingchi (không có wireAPI) vẫn phải
+        // chạy đúng endpoint /responses sau khi nâng cấp.
+        let legacy = Data(#"{"baseURL":"https://api.xingchiapi.com/v1","model":"gpt-6.1-sol","reasoningEffort":"high"}"#.utf8)
+        let decoded = try JSONDecoder().decode(APIConfiguration.self, from: legacy)
+        #expect(decoded.wireAPI == APIConfiguration.responsesWire)
+        #expect(decoded.baseURL == "https://api.xingchiapi.com/v1")
+    }
+
+    @Test func freshDefaultsTargetNvidiaChatWire() throws {
+        let config = try APIConfiguration().validated()
+        #expect(config.baseURL == "https://integrate.api.nvidia.com/v1")
+        #expect(config.model == "nvidia/nemotron-3.5-bolt-e4b")
+        #expect(config.wireAPI == APIConfiguration.chatWire)
+    }
 }
 
 @MainActor
@@ -50,12 +72,12 @@ import Testing
         }
     }
 
-    @Test func keychainFailureLeavesConfigurationUntouched() throws {
+    @Test func storageFailureLeavesConfigurationUntouched() throws {
         try withIsolatedDefaults { defaults in
             let keys = MemoryAPIKeyStore()
             let store = APISettingsStore(defaults: defaults, keyStore: keys)
-            keys.writeError = .keychainFailure(-1)
-            #expect(throws: APISettingsError.keychainFailure(-1)) {
+            keys.writeError = .storageFailure
+            #expect(throws: APISettingsError.storageFailure) {
                 try store.save(configuration: APIConfiguration(model: "replacement"), apiKey: "fixture")
             }
             #expect(store.configuration == APIConfiguration())
@@ -63,7 +85,7 @@ import Testing
         }
     }
 
-    @Test func invalidConfigurationDoesNotTouchKeychain() {
+    @Test func invalidConfigurationDoesNotTouchKeyStore() {
         withIsolatedDefaults { defaults in
             let keys = MemoryAPIKeyStore()
             let store = APISettingsStore(defaults: defaults, keyStore: keys)
@@ -113,9 +135,9 @@ import Testing
     @Test func failedDeleteRetainsKey() throws {
         try withIsolatedDefaults { defaults in
             let keys = MemoryAPIKeyStore(key: "existing-fixture")
-            keys.deleteError = .keychainFailure(-1)
+            keys.deleteError = .storageFailure
             let store = APISettingsStore(defaults: defaults, keyStore: keys)
-            #expect(throws: APISettingsError.keychainFailure(-1)) { try store.deleteAPIKey() }
+            #expect(throws: APISettingsError.storageFailure) { try store.deleteAPIKey() }
             #expect(store.hasAPIKey)
         }
     }
@@ -160,5 +182,39 @@ private final class MemoryAPIKeyStore: APIKeyStore {
     func delete() throws {
         if let deleteError { throw deleteError }
         key = nil
+    }
+}
+
+@MainActor
+@Suite struct FileAPIKeyStoreTests {
+    private func withTempDirectory(_ body: (URL) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DolaLite-FileAPIKeyStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try body(directory)
+    }
+
+    @Test func missingFileReadsNilAndDeleteIsNoop() throws {
+        try withTempDirectory { directory in
+            let store = FileAPIKeyStore(directory: directory)
+            #expect(try store.read() == nil)
+            try store.delete()
+            #expect(try store.read() == nil)
+        }
+    }
+
+    @Test func roundTripTrimsAndSetsOwnerOnlyPermissions() throws {
+        try withTempDirectory { directory in
+            let store = FileAPIKeyStore(directory: directory)
+            try store.save(" fixture-key \n")
+            #expect(try store.read() == "fixture-key")
+            let file = directory.appendingPathComponent("api-key")
+            let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+            let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            #expect(mode & 0o777 == 0o600)
+            try store.delete()
+            #expect(try store.read() == nil)
+        }
     }
 }
