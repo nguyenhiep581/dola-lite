@@ -1,2 +1,8 @@
 .worktrees/
 .superpowers/
+.build/
+.swiftpm/
+*.xcodeproj/
+DolaLite.app
+DolaLite-macOS.zip
+.DS_Store

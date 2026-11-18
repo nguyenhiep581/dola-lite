@@ -9,6 +9,8 @@
 
 ---
 
+> **Ghi chú lịch sử (2026-11-15):** Nội dung dưới đây ghi lại quan sát từ spike cũ, không phải hướng triển khai hiện tại hoặc sự cho phép tái sử dụng session/API riêng của Dola. App hiện dùng API endpoint/key do người dùng cấu hình riêng; xem `docs/superpowers/specs/2026-11-14-dola-lite-selection-assistant-design.md` và `docs/HANDOFF.md`.
+
 ## 1. Kiến trúc phát hiện được
 
 ```

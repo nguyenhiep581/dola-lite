@@ -1,107 +1,55 @@
-# Dola Lite — Trợ lý chọn text nhẹ cho macOS (Design Doc)
+# Dola Lite — Selection Assistant Design
 
-- **Ngày:** 2026-11-14
-- **Trạng thái:** Đã duyệt bởi user
-- **Thư mục dự án:** `/Users/hiep/Documents/12_translator`
+- Cập nhật: 2026-11-15
+- Trạng thái: Thiết kế đã điều chỉnh theo yêu cầu mới
 
-## 1. Bối cảnh & Mục tiêu
+## 1. Mục tiêu
 
-**Dola Browser** trên máy user là Chromium fork v147 nhúng trong `Cici.app` (`com.bot.pc.cici` v2.36.8, ByteDance). Tính năng "Thanh công cụ chọn văn bản" (Dịch / Tóm tắt / Giải thích) rất hữu dụng nhưng phải mở nguyên một trình duyệt nặng.
+App menu-bar macOS nhẹ tái tạo bằng AppKit phần UI chọn văn bản của Dola: tự hiện pill cạnh selection với ba kỹ năng **Dịch / Tóm tắt / Giải thích**, rồi hiển thị câu trả lời streaming trong result panel. Chỉ học theo bố cục/hành vi; không dùng Dola assets, API riêng tư, session, cookies, profile hay browser.
 
-**Mục tiêu:** App macOS native nhẹ tái tạo đúng 1 tính năng đó — popover tự xuất hiện khi chọn text ở bất kỳ app nào — và **dùng luôn AI backend của Dola** với tài khoản/phiên đăng nhập hiện tại của user. Không cần mở Dola Browser.
+## 2. Kiến trúc
 
-**Không phải mục tiêu (v1):** Hỏi Dola, AI Tìm kiếm, tuỳ biến kéo thả kỹ năng, tự update, phân phối App Store.
-
-## 2. Quyết định đã chốt cùng user
-
-| Quyết định | Lựa chọn |
-|---|---|
-| Trigger popover | Tự động khi chọn text (giống Dola), cần quyền Accessibility |
-| Kỹ năng v1 | Chỉ 3: Dịch, Tóm tắt, Giải thích |
-| Hiển thị kết quả | Popover nhỏ cạnh đoạn text, stream realtime |
-| Nguồn AI | Hướng A — reverse engineer API Dola + tái sử dụng phiên đăng nhập; fallback Hướng C (provider khác) chỉ khi spike bế tắc, user quyết định |
-
-## 3. Kiến trúc
-
-App **Swift/AppKit dạng menu-bar** (`LSUIElement = true`, không icon Dock). Ba thành phần độc lập, giao tiếp qua interface rõ ràng:
-
-```
-┌────────────────────────────────────────────────┐
-│ Dola Lite (menu-bar app)                       │
-│                                                │
-│  SelectionWatcher ──selection──▶ PopoverUI     │
-│        (AX API)                  │ skill click │
-│                                  ▼             │
-│                            DolaProvider ──────▶ API Dola (qua mạng)
-│                            (AIProvider)        (session từ profile Dola)
-└────────────────────────────────────────────────┘
+```text
+SelectionWatcher (Accessibility API)
+    → PillPanel / ResultPanel (AppKit NSPanel)
+    → PanelCoordinator (request ownership, dismissal, cancellation)
+    → AIProvider
+    → OpenAI-compatible Chat Completions (Xingchi mặc định)
 ```
 
-### 3.1 SelectionWatcher
-- Phát hiện text được chọn hệ thống-wide + hình chữ nhật bao (để đặt pill).
-- Cơ chế: Accessibility API — `AXUIElementCopyAttributeValue` với `AXSelectedText` / `AXSelectedTextRange` / bounds; poll có debounce ~300ms trên app foreground (`NSWorkspace.frontmostApplication`).
-- Nếu app không cung cấp bounds (một số PDF viewer, Terminal) → fallback: hiển thị cạnh vị trí con trỏ chuột (`NSEvent.mouseLocation` / CGEvent tap).
-- Lọc: bỏ qua selection của chính Dola Lite; bỏ qua text rỗng/quá ngắn (<2 ký tự) và quá dài (>~10.000 ký tự — cắt).
+`OpenAIProvider` sử dụng `URLSession` native và incremental SSE parser. App không cần DSH hoạt động sau lần import credential đầu tiên.
 
-### 3.2 PopoverUI
-- **Pill (thanh công cụ):** `NSPanel` non-activating (`.nonactivatingPanel`), 3 nút icon+label tiếng Việt: Dịch / Tóm tắt / Giải thích. Xuất hiện cạnh/vừa trên selection.
-- **Result popover:** mở ngay khi bấm kỹ năng, `NSTextView` streaming (hỗ trợ markdown cơ bản: bold, code, list), nút Copy, nút Đóng; Esc / click ngoài / đổi selection → đóng.
-- Không steal focus khỏi app đang dùng.
+## 3. Cấu hình API trong app
 
-### 3.3 DolaProvider (adapter)
-- Implement protocol `AIProvider`:
-  ```swift
-  protocol AIProvider {
-      func stream(skill: Skill, text: String) -> AsyncThrowingStream<String, Error>
-  }
-  enum Skill { case translate, summarize, explain }
-  ```
-- `translate` dùng ngôn ngữ đích = tiếng Việt (constant `Config.targetLanguage`, auto-detect nguồn).
-- Nhờ layer này, khi Dola đổi API (hoặc fallback provider khác) chỉ thay `DolaProvider`, phần còn lại không đổi.
+- Base URL mặc định: `https://api.xingchiapi.com/v1`.
+- Model mặc định: `gpt-6.1-sol`.
+- API key trong macOS Keychain; không lưu trong preferences hoặc app bundle.
+- Lần khởi tạo đầu, thử import reference `XINGCHI_API_KEY` từ DSH credential file `~/.dsh/.credentials.yaml` (hỗ trợ `$DSH_HOME`) hoặc environment fallback. Chỉ đọc reference này, không log giá trị. Kết quả import một lần; app settings sau đó độc lập với DSH.
+- Cửa sổ **Cài đặt API…** cho phép sửa Base URL/model/key và mức reasoning Tóm tắt/Giải thích. Kiểm tra kết nối là hành động chủ động gửi request nhỏ.
+- Dịch luôn đặt `reasoning_effort: low` để ưu tiên tốc độ; Tóm tắt/Giải thích dùng mức đã chọn trong app, mặc định `high`.
+- Lưu cấu hình kiểm tra Base URL HTTP(S), model, effort và key; key chỉ ghi vào Keychain. Mỗi request capture một snapshot để thay đổi mới áp dụng cho request tiếp theo.
 
-## 4. Phase 0 — Feasibility spike (bắt buộc trước khi build app)
+## 4. Selection và UI
 
-**Mục tiêu:** chứng minh gọi được API Dola từ terminal trước khi viết app.
+- Accessibility watcher đọc selection của app foreground, bỏ qua app của chính mình/trường nhập bảo mật, giới hạn 2–10.000 Unicode graphemes và debounce ổn định 300 ms.
+- Pill là capsule 3 nút icon/nhãn tiếng Việt; Result panel có tên kỹ năng, nội dung streaming, Copy, Retry, Close và markdown cơ bản.
+- Panel không kích hoạt app nguồn. Click ngoài, Escape, đổi/mất selection và đóng panel hủy request hiện hành. Request generation chặn response cũ cập nhật panel mới.
+- Bounds thiếu thì đặt gần chuột. Placement xét màn hình chứa selection, gồm màn hình phụ có tọa độ âm.
+- Cần Accessibility permission; onboarding mở System Settings. Không đọc được selection thì bỏ qua im lặng.
 
-1. **Chụp API:** khi user bấm Dịch/Tóm tắt/Giải thích trong Dola, bắt traffic:
-   - Cách 1: bật remote debugging của Chromium fork (thử env/flag, đọc traffic qua DevTools protocol).
-   - Cách 2: mitmproxy + cài cert (rủi ro certificate pinning).
-   - Cách 3 (nếu 1-2 fail): **phân tích tĩnh JS bundle của app bằng REA** (`rea analyze-javascript-application`) để tìm endpoint + format request.
-2. **Trích auth:** xác định nơi lưu session của Dola (profile Chromium dưới `~/Library/Application Support/`, cookies DB có thể mã hoá bằng Keychain "Chromium Safe Storage" — cần app của chúng ta được cấp quyền đọc key đó).
-3. **Tiêu chí thành công:** lệnh `curl` (hoặc script) gọi "Dịch đoạn văn mẫu" trả về kết quả đúng bằng session của user.
+## 5. Provider và lỗi
 
-**Điều kiện dừng:** nếu cả 3 cách đều bế tắc → báo cáo user, đề xuất Hướng C (API key provider khác với giao diện y hệt). Không build mò khi chưa có spike pass.
+- `POST {baseURL}/chat/completions`, Bearer auth, `stream: true`, model và system/user messages.
+- Chỉ render `choices[0].delta.content`; reasoning/role/usage không hiển thị. Parser xử lý chia chunk UTF-8, SSE comments/multiline/CRLF, terminal sentinel, stream lỗi/cắt ngang và giới hạn bộ đệm.
+- Timeout, mạng, 401/403/429/5xx, phản hồi rỗng/cắt ngang hiển thị thông báo tiếng Việt an toàn. Không echo server body hoặc credential. Không retry tự động sau khi đã nhận nội dung; nút Retry tạo request mới.
+- Người dùng tự cấu hình endpoint và API key; chưa cam kết provider nào cấp quyền cho mọi model.
 
-## 5. Xử lý lỗi
+## 6. Kiểm thử và kiểm chứng
 
-| Tình huống | Hành vi |
-|---|---|
-| 401 / session hết hạn | Notification: "Mở Dola Browser đăng nhập lại" → app theo dõi file session, tự đọc lại khi có session mới |
-| Lỗi mạng / timeout | Popover hiện thông báo + nút Thử lại |
-| Rate limit / quota | Hiện thông điệp từ API (nếu parse được) |
-| Thiếu quyền Accessibility | Màn hình onboarding 1 nút mở System Settings → Privacy → Accessibility |
-| App không cho đọc selection | Pill không hiện (im lặng) — không spam lỗi |
+Unit tests bao phủ settings/import/keychain abstraction, request builder, SSE, HTTP status, cancellation, selection debounce, panel placement và request generation. `swift test` chạy thành công 47 test, gồm cả ba kỹ năng qua URLSession với phản hồi SSE giả. `scripts/make-app.sh` tạo release `.app` ad-hoc signed; lệnh `codesign --verify --strict` đã pass.
 
-**Bảo mật:** app không lưu mật khẩu/token riêng; chỉ đọc session Dola đã có trên máy. Toàn bộ traffic đi thẳng tới API Dola, không qua bên thứ ba. Công cụ mang tính cá nhân — không phân phối dùng chung token.
+Key hiện tại truy vấn `GET /v1/models` thành công và endpoint liệt kê `gpt-6.1-sol`, nhưng metadata model không nêu quyền completion. Probe thật tới `POST /v1/chat/completions` với `reasoning_effort=low` nhận HTTP 403 từ app lẫn HTTP trực tiếp. Vì vậy chưa xác nhận thành công end-to-end; cần hỏi Xingchi lý do từ chối hoặc yêu cầu client/protocol nào. Manual Accessibility/UI matrix cũng còn cần chạy sau khi cấp quyền macOS.
 
-## 6. Kiểm thử
+## 7. Ranh giới sản phẩm
 
-- **Spike:** curl replay thành công = điều kiện cần để tiếp tục Phase 1.
-- **Unit test:** `DolaProvider` (mock SSE server), parsing response, debounce logic của SelectionWatcher.
-- **Manual matrix (SelectionWatcher + popover):** Safari, Chrome, Notes, Preview (PDF), VS Code, Terminal, Word/Pages; tiếng Việt ↔ Anh, CJK; đoạn dài 10.000 ký tự; text có emoji/code.
-- **Regression:** đóng/mở nhanh liên tiếp, đổi app liên tục, hai màn hình.
-
-## 7. Kế hoạch phân phối
-
-- Build local, code sign ad-hoc; chạy trực tiếp trên máy user (ngoài App Store do dùng session app khác).
-- Cấu trúc project: Swift Package executable + AppKit (không cần Xcode project nếu dùng `swift build`; sẽ tạo `.app` bundle bằng script).
-
-## 8. Rủi ro đã biết
-
-| Rủi ro | Giảm thiểu |
-|---|---|
-| API Dola là private, đổi bất kỳ lúc nào | Lớp adapter `AIProvider` cô lập thay đổi; document format đã reverse trong `docs/notes/` |
-| Certificate pinning chặn bắt traffic | Có sẵn phương án REA phân tích tĩnh |
-| Session cookie bị expire định kỳ | Cơ chế re-read + notification hướng dẫn đăng nhập lại |
-| ToS (dùng API ngoài client chính thức) | Phạm vi cá nhân, tài khoản của user, không chia sẻ tool |
-| Accessibility API không đọc được selection trong vài app | Fallback hiển thị cạnh chuột; danh sách app đã test trong docs |
+Không bao gồm hỏi chuyện tổng quát, search, Dola private API, scraping cookie/session, Dola Browser automation hay phân phối App Store. UI là mã AppKit tự viết, không sao chép tài sản nhị phân của Dola.

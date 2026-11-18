@@ -1,0 +1,164 @@
+import Foundation
+import Testing
+@testable import DolaLite
+
+@Suite struct SettingsConfigurationTests {
+    @Test func trimsAndNormalizesValidConfiguration() throws {
+        let value = try APIConfiguration(baseURL: " https://api.example.test/v1///\n",
+                                         model: " sample-model ", reasoningEffort: " LOW ").validated()
+        #expect(value == APIConfiguration(baseURL: "https://api.example.test/v1", model: "sample-model", reasoningEffort: "low"))
+    }
+
+    @Test(arguments: ["", "example.test/v1", "file:///tmp/key", "https://user:pass@example.test/v1",
+                      "https://example.test/v1?key=fixture", "https://example.test/v1#fragment"])
+    func rejectsInvalidBaseURL(_ url: String) {
+        #expect(throws: APISettingsError.invalidBaseURL) { try APIConfiguration(baseURL: url).validated() }
+    }
+
+    @Test func rejectsEmptyModelAndUnknownReasoning() {
+        #expect(throws: APISettingsError.invalidModel) { try APIConfiguration(model: " \n ").validated() }
+        #expect(throws: APISettingsError.invalidReasoningEffort) { try APIConfiguration(reasoningEffort: "ultra").validated() }
+    }
+
+    @Test func configurationCodableRoundTrip() throws {
+        let original = APIConfiguration(baseURL: "http://localhost:8123/v1", model: "fixture", reasoningEffort: "medium")
+        #expect(try JSONDecoder().decode(APIConfiguration.self, from: JSONEncoder().encode(original)) == original)
+    }
+}
+
+@MainActor
+@Suite struct SettingsStoreTests {
+    /// UserDefaults backed only by memory: writes never reach cfprefsd, so
+    /// test runs can't leave `DolaLite.SettingsTests` plists in
+    /// ~/Library/Preferences (suite-based defaults re-create their plist via
+    /// asynchronous daemon flush even after `removePersistentDomain`).
+    private func withIsolatedDefaults<T>(_ body: (UserDefaults) throws -> T) rethrows -> T {
+        try body(InMemoryDefaults())
+    }
+
+    @Test func savePersistsConfigurationAndKeyAndRestores() throws {
+        try withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore()
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            let value = APIConfiguration(model: "new-model", reasoningEffort: "medium")
+            try store.save(configuration: value, apiKey: " fixture-new ")
+            let restored = APISettingsStore(defaults: defaults, keyStore: keys)
+            #expect(restored.configuration == value)
+            #expect(try restored.snapshot().apiKey == "fixture-new")
+            #expect(keys.saveCount == 1)
+            #expect(restored.hasAPIKey)
+        }
+    }
+
+    @Test func keychainFailureLeavesConfigurationUntouched() throws {
+        try withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore()
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            keys.writeError = .keychainFailure(-1)
+            #expect(throws: APISettingsError.keychainFailure(-1)) {
+                try store.save(configuration: APIConfiguration(model: "replacement"), apiKey: "fixture")
+            }
+            #expect(store.configuration == APIConfiguration())
+            #expect(defaults.data(forKey: APISettingsStore.configurationDefaultsKey) == nil)
+        }
+    }
+
+    @Test func invalidConfigurationDoesNotTouchKeychain() {
+        withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore()
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            #expect(throws: APISettingsError.invalidModel) {
+                try store.save(configuration: APIConfiguration(model: ""), apiKey: "fixture")
+            }
+            #expect(keys.saveCount == 0)
+        }
+    }
+
+    @Test func emptyKeyFieldKeepsExistingKey() throws {
+        try withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore(key: "existing-fixture")
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            try store.save(configuration: APIConfiguration(reasoningEffort: "low"), apiKey: " ")
+            #expect(try store.snapshot().apiKey == "existing-fixture")
+            #expect(keys.saveCount == 0)
+            #expect(store.configuration.reasoningEffort == "low")
+        }
+    }
+
+    @Test func missingOrInvalidKeyCannotProduceSnapshotOrSave() {
+        withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore()
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            #expect(throws: APISettingsError.missingAPIKey) { try store.snapshot() }
+            #expect(throws: APISettingsError.missingAPIKey) { try store.save(configuration: APIConfiguration(), apiKey: "") }
+            #expect(throws: APISettingsError.invalidAPIKey) {
+                try store.save(configuration: APIConfiguration(), apiKey: "fixture\r\ninjected")
+            }
+            #expect(!store.hasAPIKey)
+        }
+    }
+
+    @Test func deleteRemovesKeyButKeepsConfiguration() throws {
+        try withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore(key: "existing-fixture")
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            try store.save(configuration: APIConfiguration(model: "kept-model"), apiKey: "fixture")
+            try store.deleteAPIKey()
+            #expect(!store.hasAPIKey)
+            #expect(store.configuration == APIConfiguration(model: "kept-model"))
+            #expect(throws: APISettingsError.missingAPIKey) { try store.snapshot() }
+        }
+    }
+
+    @Test func failedDeleteRetainsKey() throws {
+        try withIsolatedDefaults { defaults in
+            let keys = MemoryAPIKeyStore(key: "existing-fixture")
+            keys.deleteError = .keychainFailure(-1)
+            let store = APISettingsStore(defaults: defaults, keyStore: keys)
+            #expect(throws: APISettingsError.keychainFailure(-1)) { try store.deleteAPIKey() }
+            #expect(store.hasAPIKey)
+        }
+    }
+
+    @Test func corruptPreferencesUseDefaultsAndReportSafeError() {
+        withIsolatedDefaults { defaults in
+            defaults.set(Data("not-json".utf8), forKey: APISettingsStore.configurationDefaultsKey)
+            let store = APISettingsStore(defaults: defaults, keyStore: MemoryAPIKeyStore())
+            #expect(store.configuration == APIConfiguration())
+            #expect(store.initializationError == APISettingsError.invalidStoredConfiguration.localizedDescription)
+        }
+    }
+}
+
+@MainActor
+private final class InMemoryDefaults: UserDefaults {
+    private var storage: [String: Any] = [:]
+
+    override func object(forKey defaultName: String) -> Any? { storage[defaultName] }
+    override func set(_ value: Any?, forKey defaultName: String) { storage[defaultName] = value }
+    override func removeObject(forKey defaultName: String) { storage[defaultName] = nil }
+}
+
+@MainActor
+private final class MemoryAPIKeyStore: APIKeyStore {
+    var key: String?
+    var readError: APISettingsError?
+    var writeError: APISettingsError?
+    var deleteError: APISettingsError?
+    var saveCount = 0
+
+    init(key: String? = nil) { self.key = key }
+    func read() throws -> String? {
+        if let readError { throw readError }
+        return key
+    }
+    func save(_ apiKey: String) throws {
+        if let writeError { throw writeError }
+        key = apiKey
+        saveCount += 1
+    }
+    func delete() throws {
+        if let deleteError { throw deleteError }
+        key = nil
+    }
+}
