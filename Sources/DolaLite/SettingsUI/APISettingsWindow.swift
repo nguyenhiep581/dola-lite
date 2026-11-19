@@ -3,12 +3,14 @@ import AppKit
 @MainActor
 final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSComboBoxDelegate {
     private let store: APISettingsStore
+    private let launchAtLogin: LaunchAtLoginControlling?
     private let baseURLField = NSTextField()
     private let modelField = NSComboBox()
     // Ô text thường (không phải ô mật khẩu) để paste và kiểm tra key dài bằng mắt.
     private let keyField = NSTextField()
     private let effortPicker = NSPopUpButton()
     private let wirePicker = NSPopUpButton()
+    private let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "Khởi động Dola Lite cùng macOS", target: nil, action: nil)
     private let status = NSTextField(wrappingLabelWithString: "")
     private let testButton = NSButton(title: "Kiểm tra kết nối", target: nil, action: nil)
     private var testTask: Task<Void, Never>?
@@ -19,9 +21,10 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
     var onClose: (() -> Void)?
     var onSave: (() -> Void)?
 
-    init(store: APISettingsStore) {
+    init(store: APISettingsStore, launchAtLogin: LaunchAtLoginControlling? = nil) {
         self.store = store
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 470),
+        self.launchAtLogin = launchAtLogin
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 340),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Cài đặt API — Dola Lite"
         window.isReleasedWhenClosed = false
@@ -41,8 +44,16 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         keyField.stringValue = ""
         effortPicker.selectItem(withTitle: config.reasoningEffort)
         wirePicker.selectItem(withTitle: Self.wireTitles[config.wireAPI] ?? APIConfiguration.chatWire)
+        syncLaunchAtLoginCheckbox()
         updateKeyPlaceholder()
-        status.stringValue = store.initializationError ?? (store.hasAPIKey ? "API key đã được lưu trên máy (file riêng tư)." : "Chưa có API key. Nhập key để bắt đầu.")
+        if let initError = store.initializationError {
+            setStatus(initError, color: .systemOrange)
+        } else if !store.hasAPIKey {
+            setStatus("Chưa có API key. Nhập key để bắt đầu.", color: .secondaryLabelColor)
+        } else {
+            setStatus("", color: .secondaryLabelColor)
+        }
+        fitWindowToContent()
         window?.center()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -59,17 +70,17 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
     func controlTextDidChange(_ notification: Notification) {
         cancelConnectionTest()
         cancelModelFetch()
-        status.stringValue = ""
+        setStatus("", color: .secondaryLabelColor)
     }
 
     func comboBoxSelectionDidChange(_ notification: Notification) {
         cancelConnectionTest()
-        status.stringValue = ""
+        setStatus("", color: .secondaryLabelColor)
     }
 
     @objc private func configurationOptionChanged() {
         cancelConnectionTest()
-        status.stringValue = ""
+        setStatus("", color: .secondaryLabelColor)
     }
 
     private func cancelConnectionTest() {
@@ -86,46 +97,113 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         refreshModelsButton.isEnabled = true
     }
 
+    private func setStatus(_ message: String, color: NSColor) {
+        let wasHidden = status.isHidden
+        status.stringValue = message
+        status.textColor = color
+        status.isHidden = message.isEmpty
+        if wasHidden != status.isHidden || !message.isEmpty {
+            fitWindowToContent()
+        }
+    }
+
+    private func fitWindowToContent() {
+        guard let window, let content = window.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        let fitting = content.fittingSize
+        let targetHeight = max(280, ceil(fitting.height))
+        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 480, height: targetHeight))
+        frame.origin.x = window.frame.origin.x
+        frame.origin.y = window.frame.maxY - frame.height
+        if abs(window.frame.height - frame.height) > 1 || abs(window.frame.width - frame.width) > 1 {
+            window.setFrame(frame, display: true)
+        }
+    }
+
     private func buildContent() {
         guard let content = window?.contentView else { return }
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 12
+        root.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(root)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            content.widthAnchor.constraint(equalToConstant: 480)
         ])
-        let subtitle = NSTextField(wrappingLabelWithString: "Cấu hình riêng cho Dola Lite. Mỗi lần gọi dùng thiết lập đã lưu gần nhất.")
-        subtitle.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(subtitle)
-        addField("Base URL", field: baseURLField, to: stack)
-        addModelField(to: stack)
-        addField("API key", field: keyField, to: stack)
+
+        let formCard = AdaptiveSurfaceView(frame: .zero)
+        formCard.cornerRadius = 10
+        formCard.borderWidth = 1
+        formCard.fillColor = { DesignTokens.Colors.cardSurface }
+
+        let formStack = NSStackView()
+        formStack.orientation = .vertical
+        formStack.alignment = .leading
+        formStack.spacing = 10
+        formStack.translatesAutoresizingMaskIntoConstraints = false
+        formCard.addSubview(formStack)
+        NSLayoutConstraint.activate([
+            formStack.leadingAnchor.constraint(equalTo: formCard.leadingAnchor, constant: 14),
+            formStack.trailingAnchor.constraint(equalTo: formCard.trailingAnchor, constant: -14),
+            formStack.topAnchor.constraint(equalTo: formCard.topAnchor, constant: 12),
+            formStack.bottomAnchor.constraint(equalTo: formCard.bottomAnchor, constant: -12)
+        ])
+
+        addField("Base URL", field: baseURLField, to: formStack)
+        addModelField(to: formStack)
+        addField("API key", field: keyField, to: formStack)
+
         wirePicker.addItems(withTitles: [Self.wireTitles[APIConfiguration.chatWire]!,
                                          Self.wireTitles[APIConfiguration.responsesWire]!])
         wirePicker.target = self
         wirePicker.action = #selector(configurationOptionChanged)
-        let wireRow = NSStackView(views: [NSTextField(labelWithString: "Kiểu API"), wirePicker])
-        wireRow.spacing = 12
-        stack.addArrangedSubview(wireRow)
+
         effortPicker.addItems(withTitles: ["low", "medium", "high"])
         effortPicker.target = self
         effortPicker.action = #selector(configurationOptionChanged)
-        let effortRow = NSStackView(views: [NSTextField(labelWithString: "Tóm tắt / Giải thích"), effortPicker])
-        effortRow.spacing = 12
-        stack.addArrangedSubview(effortRow)
-        let note = NSTextField(wrappingLabelWithString: "Dịch luôn dùng mức low để ưu tiên tốc độ. Kiểm tra kết nối dùng cùng một đoạn dịch mẫu và tính tổng thời gian đến khi nhận xong; thời gian có thể dao động theo mạng và tải máy chủ. Để trống ô API key để giữ key đã lưu.")
-        note.font = .systemFont(ofSize: 11)
-        note.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(note)
-        status.font = .systemFont(ofSize: 12)
+
+        let wireGroup = makePickerGroup(label: "Kiểu API", picker: wirePicker)
+        let effortGroup = makePickerGroup(label: "Tóm tắt / Giải thích", picker: effortPicker)
+        let optionsRow = NSStackView(views: [wireGroup, effortGroup])
+        optionsRow.orientation = .horizontal
+        optionsRow.distribution = .fillEqually
+        optionsRow.spacing = 12
+        formStack.addArrangedSubview(optionsRow)
+        optionsRow.widthAnchor.constraint(equalTo: formStack.widthAnchor).isActive = true
+
+        root.addArrangedSubview(formCard)
+        formCard.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+
+        if launchAtLogin != nil {
+            launchAtLoginCheckbox.font = .systemFont(ofSize: 12)
+            launchAtLoginCheckbox.target = self
+            launchAtLoginCheckbox.action = #selector(toggleLaunchAtLogin)
+            root.addArrangedSubview(launchAtLoginCheckbox)
+        }
+
+        let note = NSTextField(wrappingLabelWithString: "Dịch luôn dùng mức low để ưu tiên tốc độ. Để trống API key để giữ key đã lưu.")
+        note.font = DesignTokens.Typography.caption
+        note.textColor = .tertiaryLabelColor
+        root.addArrangedSubview(note)
+        note.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+
+        status.font = .systemFont(ofSize: 11.5)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        stack.addArrangedSubview(status)
-        let deleteButton = NSButton(title: "Xóa API key", target: self, action: #selector(deleteKey))
+        status.isHidden = true
+        root.addArrangedSubview(status)
+        status.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+
+        let footerDivider = HistoryDividerView(axis: .horizontal)
+        root.addArrangedSubview(footerDivider)
+        footerDivider.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+        footerDivider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+
+        let deleteButton = NSButton(title: "Xóa key", target: self, action: #selector(deleteKey))
         testButton.target = self
         testButton.action = #selector(testConnection)
         refreshModelsButton.target = self
@@ -134,12 +212,16 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         cancel.keyEquivalent = "\u{1b}"
         let save = NSButton(title: "Lưu", target: self, action: #selector(save))
         save.keyEquivalent = "\r"
-        let row = NSStackView(views: [deleteButton, testButton, cancel, save])
-        row.spacing = 8
-        stack.addArrangedSubview(row)
-        for view in [subtitle, note, status] {
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
+        save.bezelColor = .controlAccentColor
+
+        let footerSpacer = NSView()
+        let footerRow = NSStackView(views: [deleteButton, testButton, footerSpacer, cancel, save])
+        footerRow.orientation = .horizontal
+        footerRow.alignment = .centerY
+        footerRow.spacing = 8
+        root.addArrangedSubview(footerRow)
+        footerRow.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
+
         baseURLField.delegate = self
         modelField.delegate = self
         keyField.delegate = self
@@ -149,9 +231,22 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
         modelField.numberOfVisibleItems = 12
     }
 
+    private func makePickerGroup(label: String, picker: NSPopUpButton) -> NSStackView {
+        let title = NSTextField(labelWithString: label)
+        title.font = .systemFont(ofSize: 11.5, weight: .medium)
+        title.textColor = .secondaryLabelColor
+        let group = NSStackView(views: [title, picker])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 4
+        picker.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true
+        return group
+    }
+
     private func addModelField(to stack: NSStackView) {
         let title = NSTextField(labelWithString: "Model")
-        title.font = .systemFont(ofSize: 12, weight: .medium)
+        title.font = .systemFont(ofSize: 11.5, weight: .medium)
+        title.textColor = .secondaryLabelColor
         let row = NSStackView(views: [modelField, refreshModelsButton])
         row.spacing = 8
         row.distribution = .fill
@@ -169,7 +264,8 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
 
     private func addField(_ label: String, field: NSTextField, to stack: NSStackView) {
         let title = NSTextField(labelWithString: label)
-        title.font = .systemFont(ofSize: 12, weight: .medium)
+        title.font = .systemFont(ofSize: 11.5, weight: .medium)
+        title.textColor = .secondaryLabelColor
         let group = NSStackView(views: [title, field])
         group.orientation = .vertical
         group.alignment = .leading
@@ -192,7 +288,31 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
     }
 
     private func updateKeyPlaceholder() {
-        keyField.placeholderString = store.hasAPIKey ? "Đã lưu key — nhập để thay" : "Nhập API key"
+        keyField.placeholderString = store.hasAPIKey ? "Đã lưu key trên máy — nhập để thay đổi" : "Nhập API key"
+    }
+
+    private func syncLaunchAtLoginCheckbox() {
+        guard let launchAtLogin else { return }
+        launchAtLoginCheckbox.state = launchAtLogin.isEnabled ? .on : .off
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        guard let launchAtLogin else { return }
+        let target = launchAtLoginCheckbox.state == .on
+        do {
+            try launchAtLogin.setEnabled(target)
+            syncLaunchAtLoginCheckbox()
+            setStatus(target ? "Đã bật khởi động cùng macOS." : "Đã tắt khởi động cùng macOS.",
+                      color: .secondaryLabelColor)
+            onSave?()
+        } catch let error as LaunchAtLoginError where error == .requiresApproval {
+            syncLaunchAtLoginCheckbox()
+            setStatus(error.localizedDescription, color: .systemOrange)
+            launchAtLogin.openSystemSettings()
+        } catch {
+            syncLaunchAtLoginCheckbox()
+            setStatus(error.localizedDescription, color: .systemRed)
+        }
     }
 
     @objc private func save() {
@@ -203,7 +323,7 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
             keyField.stringValue = ""
             onSave?()
             window?.close()
-        } catch { status.stringValue = error.localizedDescription }
+        } catch { setStatus(error.localizedDescription, color: .systemRed) }
     }
 
     @objc private func cancel() { window?.close() }
@@ -215,9 +335,9 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
             try store.deleteAPIKey()
             keyField.stringValue = ""
             updateKeyPlaceholder()
-            status.stringValue = "Đã xóa API key. Nhập key mới rồi bấm Lưu."
+            setStatus("Đã xóa API key. Nhập key mới rồi bấm Lưu.", color: .secondaryLabelColor)
             onSave?()
-        } catch { status.stringValue = error.localizedDescription }
+        } catch { setStatus(error.localizedDescription, color: .systemRed) }
     }
 
     @objc private func testConnection() {
@@ -231,7 +351,7 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
             let snapshot = APICredentialsSnapshot(configuration: config, apiKey: key)
             let provider = OpenAIProvider(configuration: { snapshot })
             testButton.isEnabled = false
-            status.stringValue = "Đang gửi yêu cầu kiểm tra nhỏ…"
+            setStatus("Đang gửi yêu cầu kiểm tra nhỏ…", color: .secondaryLabelColor)
             testTask = Task { [weak self] in
                 guard let self else { return }
                 let startedAt = ProcessInfo.processInfo.systemUptime
@@ -251,17 +371,19 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
                     guard !Task.isCancelled, self.testGeneration == generation else { return }
                     let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
                     let timing = String(format: "%.2f giây", locale: Locale.current, elapsed)
-                    status.stringValue = received
-                        ? "Kết nối thành công · tổng thời gian dịch mẫu: \(timing)."
-                        : "API chưa trả nội dung · thời gian chờ: \(timing)."
+                    if received {
+                        setStatus("Kết nối thành công — tổng thời gian dịch mẫu: \(timing).", color: .systemGreen)
+                    } else {
+                        setStatus("API chưa trả nội dung — thời gian chờ: \(timing).", color: .systemOrange)
+                    }
                 } catch {
                     guard !Task.isCancelled, self.testGeneration == generation else { return }
                     let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
                     let timing = String(format: "%.2f giây", locale: Locale.current, elapsed)
-                    status.stringValue = "\(error.localizedDescription) · thời gian chờ: \(timing)."
+                    setStatus("\(error.localizedDescription) (chờ \(timing)).", color: .systemRed)
                 }
             }
-        } catch { status.stringValue = error.localizedDescription }
+        } catch { setStatus(error.localizedDescription, color: .systemRed) }
     }
 
     @objc private func fetchModels() {
@@ -274,7 +396,7 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
             let key = entered.isEmpty ? try store.snapshot().apiKey : entered
             let snapshot = APICredentialsSnapshot(configuration: config, apiKey: key)
             refreshModelsButton.isEnabled = false
-            status.stringValue = "Đang tải danh sách model…"
+            setStatus("Đang tải danh sách model…", color: .secondaryLabelColor)
             modelFetchTask = Task { [weak self] in
                 guard let self else { return }
                 defer {
@@ -288,16 +410,18 @@ final class APISettingsWindow: NSWindowController, NSWindowDelegate, NSTextField
                     guard !Task.isCancelled, self.modelFetchGeneration == generation else { return }
                     modelField.removeAllItems()
                     modelField.addItems(withObjectValues: models)
-                    status.stringValue = models.isEmpty
-                        ? "Endpoint chưa trả về model nào. Bạn vẫn có thể nhập model thủ công."
-                        : "Đã tải \(models.count) model. Chọn trong danh sách hoặc nhập model thủ công."
+                    if models.isEmpty {
+                        setStatus("Endpoint chưa trả về model nào. Bạn vẫn có thể nhập thủ công.", color: .systemOrange)
+                    } else {
+                        setStatus("Đã tải \(models.count) model — chọn trong danh sách hoặc nhập thủ công.", color: .systemGreen)
+                    }
                 } catch {
                     guard !Task.isCancelled, self.modelFetchGeneration == generation else { return }
-                    status.stringValue = error.localizedDescription
+                    setStatus(error.localizedDescription, color: .systemRed)
                 }
             }
         } catch {
-            status.stringValue = error.localizedDescription
+            setStatus(error.localizedDescription, color: .systemRed)
         }
     }
 }

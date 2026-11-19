@@ -88,10 +88,10 @@ final class HistoryRowButton: NSButton {
         addSubview(container)
 
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            container.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            container.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            container.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            container.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
             previewLabel.widthAnchor.constraint(equalTo: container.widthAnchor),
             metaRow.widthAnchor.constraint(equalTo: container.widthAnchor)
         ])
@@ -109,11 +109,20 @@ final class HistoryRowButton: NSButton {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.cornerRadius = DesignTokens.Radius.control
             if isSelectedRow {
-                layer?.backgroundColor = DesignTokens.Colors.activeSurface.cgColor
+                layer?.backgroundColor = DesignTokens.Colors.selectedRowSurface.cgColor
+                layer?.borderWidth = 1
+                layer?.borderColor = DesignTokens.Colors.selectedRowBorder.cgColor
+                skillLabel.textColor = .controlAccentColor
             } else if isHovered {
                 layer?.backgroundColor = DesignTokens.Colors.hoverSurface.cgColor
+                layer?.borderWidth = 0
+                layer?.borderColor = nil
+                skillLabel.textColor = .secondaryLabelColor
             } else {
                 layer?.backgroundColor = NSColor.clear.cgColor
+                layer?.borderWidth = 0
+                layer?.borderColor = nil
+                skillLabel.textColor = .secondaryLabelColor
             }
         }
     }

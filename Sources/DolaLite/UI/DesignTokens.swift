@@ -35,10 +35,17 @@ enum DesignTokens {
     }
 
     enum Colors {
-        static var hoverSurface: NSColor { NSColor.labelColor.withAlphaComponent(0.07) }
+        static var cardSurface: NSColor { .controlBackgroundColor }
+        static var editorSurface: NSColor { .textBackgroundColor }
+        static var sidebarSurface: NSColor { .underPageBackgroundColor }
+        static var hoverSurface: NSColor { NSColor.labelColor.withAlphaComponent(0.06) }
         static var activeSurface: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.14) }
-        static var subtleSurface: NSColor { NSColor.quaternaryLabelColor.withAlphaComponent(0.18) }
-        static var codeBackground: NSColor { NSColor.quaternaryLabelColor.withAlphaComponent(0.10) }
+        static var selectedRowSurface: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.14) }
+        static var selectedRowBorder: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.32) }
+        // Keep native separatorColor alpha (~10% light / ~18% dark); calling
+        // withAlphaComponent() replaces that alpha and creates harsh dark lines.
+        static var subtleBorder: NSColor { .separatorColor }
+        static var codeBackground: NSColor { NSColor.labelColor.withAlphaComponent(0.06) }
     }
 }
 
@@ -47,8 +54,8 @@ enum DesignTokens {
 final class AdaptiveSurfaceView: NSView {
     var cornerRadius: CGFloat = DesignTokens.Radius.tray
     var borderWidth: CGFloat = 1
-    var fillColor: () -> NSColor = { DesignTokens.Colors.subtleSurface }
-    var strokeColor: () -> NSColor = { .separatorColor }
+    var fillColor: () -> NSColor = { DesignTokens.Colors.cardSurface }
+    var strokeColor: () -> NSColor = { DesignTokens.Colors.subtleBorder }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -62,6 +69,7 @@ final class AdaptiveSurfaceView: NSView {
     override func updateLayer() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.cornerRadius = cornerRadius
+            layer?.masksToBounds = cornerRadius > 0
             layer?.borderWidth = borderWidth
             layer?.backgroundColor = fillColor().cgColor
             layer?.borderColor = strokeColor().cgColor

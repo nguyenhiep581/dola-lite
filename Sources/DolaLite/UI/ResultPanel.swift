@@ -21,7 +21,8 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
     private let dragHandle = PanelDragHandle(frame: .zero)
     private let resizeHandle = PanelResizeHandle(frame: .zero)
     private let historyContainer = AdaptiveSurfaceView(frame: .zero)
-    private let historyTitle = NSTextField(labelWithString: "Lịch sử")
+    private let historyTitle = NSTextField(labelWithString: "Lịch sử gần đây")
+    private let historyCountLabel = NSTextField(labelWithString: "")
     private let historyScroll = NSScrollView()
     private let historyStack = FlippedHistoryStackView()
     private var historyHeightConstraint: NSLayoutConstraint!
@@ -138,15 +139,24 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
         historyContainer.isHidden = true
         historyContainer.cornerRadius = DesignTokens.Radius.tray
         historyContainer.borderWidth = 1
+        historyContainer.fillColor = { DesignTokens.Colors.cardSurface }
         card.addSubview(historyContainer)
         historyTitle.font = .systemFont(ofSize: 11, weight: .semibold)
         historyTitle.textColor = .secondaryLabelColor
         historyTitle.translatesAutoresizingMaskIntoConstraints = false
         historyContainer.addSubview(historyTitle)
+        historyCountLabel.font = DesignTokens.Typography.caption
+        historyCountLabel.textColor = .tertiaryLabelColor
+        historyCountLabel.alignment = .right
+        historyCountLabel.translatesAutoresizingMaskIntoConstraints = false
+        historyContainer.addSubview(historyCountLabel)
+        let historyHeaderDivider = HistoryDividerView(axis: .horizontal)
+        historyHeaderDivider.translatesAutoresizingMaskIntoConstraints = false
+        historyContainer.addSubview(historyHeaderDivider)
         historyStack.orientation = .vertical
         historyStack.alignment = .leading
-        historyStack.spacing = 4
-        historyStack.edgeInsets = NSEdgeInsets(top: 2, left: 2, bottom: 6, right: 6)
+        historyStack.spacing = 2
+        historyStack.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 6, right: 4)
         historyStack.translatesAutoresizingMaskIntoConstraints = false
         historyScroll.documentView = historyStack
         historyScroll.hasVerticalScroller = true
@@ -192,14 +202,19 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
             scrollView.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
             scrollView.bottomAnchor.constraint(equalTo: historyContainer.topAnchor, constant: -8),
             historyContainer.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            historyContainer.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            historyContainer.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             historyContainer.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -8),
-            historyTitle.leadingAnchor.constraint(equalTo: historyContainer.leadingAnchor, constant: 8),
-            historyTitle.topAnchor.constraint(equalTo: historyContainer.topAnchor, constant: 6),
-            historyScroll.topAnchor.constraint(equalTo: historyTitle.bottomAnchor, constant: 2),
-            historyScroll.leadingAnchor.constraint(equalTo: historyContainer.leadingAnchor, constant: 4),
-            historyScroll.trailingAnchor.constraint(equalTo: historyContainer.trailingAnchor, constant: -4),
-            historyScroll.bottomAnchor.constraint(equalTo: historyContainer.bottomAnchor, constant: -4),
+            historyTitle.leadingAnchor.constraint(equalTo: historyContainer.leadingAnchor, constant: 10),
+            historyTitle.topAnchor.constraint(equalTo: historyContainer.topAnchor, constant: 7),
+            historyCountLabel.trailingAnchor.constraint(equalTo: historyContainer.trailingAnchor, constant: -10),
+            historyCountLabel.centerYAnchor.constraint(equalTo: historyTitle.centerYAnchor),
+            historyHeaderDivider.topAnchor.constraint(equalTo: historyTitle.bottomAnchor, constant: 6),
+            historyHeaderDivider.leadingAnchor.constraint(equalTo: historyContainer.leadingAnchor),
+            historyHeaderDivider.trailingAnchor.constraint(equalTo: historyContainer.trailingAnchor),
+            historyHeaderDivider.heightAnchor.constraint(equalToConstant: 1),
+            historyScroll.topAnchor.constraint(equalTo: historyHeaderDivider.bottomAnchor, constant: 2),
+            historyScroll.leadingAnchor.constraint(equalTo: historyContainer.leadingAnchor, constant: 2),
+            historyScroll.trailingAnchor.constraint(equalTo: historyContainer.trailingAnchor, constant: -2),
             historyStack.leadingAnchor.constraint(equalTo: historyScroll.contentView.leadingAnchor),
             historyStack.trailingAnchor.constraint(equalTo: historyScroll.contentView.trailingAnchor),
             historyStack.topAnchor.constraint(equalTo: historyScroll.contentView.topAnchor),
@@ -218,6 +233,11 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
         ])
         historyHeightConstraint = historyContainer.heightAnchor.constraint(equalToConstant: 0)
         historyHeightConstraint.isActive = true
+        // Lower bottom priority so collapsing historyContainer to height 0 never
+        // conflicts with the header/divider vertical constraints.
+        let historyScrollBottom = historyScroll.bottomAnchor.constraint(equalTo: historyContainer.bottomAnchor, constant: -2)
+        historyScrollBottom.priority = .defaultHigh
+        historyScrollBottom.isActive = true
     }
 
     override var canBecomeKey: Bool { true }
@@ -423,6 +443,7 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
     }
 
     private func reloadHistory(_ entries: [HistoryEntry]) {
+        historyCountLabel.stringValue = entries.isEmpty ? "" : "\(entries.count) mục"
         for view in historyStack.arrangedSubviews {
             historyStack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -444,7 +465,7 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
             if index < entries.count - 1 {
                 let divider = HistoryDividerView(axis: .horizontal)
                 historyStack.addArrangedSubview(divider)
-                divider.widthAnchor.constraint(equalTo: historyStack.widthAnchor, constant: -8).isActive = true
+                divider.widthAnchor.constraint(equalTo: historyStack.widthAnchor, constant: -20).isActive = true
                 divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
             }
         }

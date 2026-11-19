@@ -1,14 +1,37 @@
-# Dola Lite for Windows
+# Dola Lite for Windows (Rust + Tauri 2)
 
-Planned independent Windows desktop app using Rust + Tauri 2. The existing macOS Swift/AppKit app remains at the repository root and is not part of this project.
+Independent Windows 10/11 x64 desktop edition built with Rust, Tauri 2, TypeScript, and Windows UI Automation. The macOS Swift/AppKit app at the repository root remains completely separate.
 
-## Status
+## Features
 
-Planning and feasibility spike. A small standalone Rust UI Automation diagnostic lives in `ui-automation-spike/`; its core unit tests run on macOS and the Windows target passes cross-compile checks (`x86_64-pc-windows-msvc`), but it is not the production watcher and has not yet been executed on a real Windows machine. The full Tauri, Rust backend, and frontend scaffold has not been generated.
+- **System tray & Launch at Windows login:** Tray menu with API status, Settings, History, Launch at Windows login (`tauri-plugin-autostart`), and Quit.
+- **Native Windows UI Automation watcher:** Dedicated MTA COM worker (`CUIAutomation8` / `IUIAutomation2`, 500 ms connection/transaction timeouts, Per-Monitor V2 DPI awareness, password-field skipping, debounced selection & deselection). Never reads or modifies the clipboard.
+- **Non-activating floating pill:** Uses `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` + `WM_MOUSEACTIVATE` (`MA_NOACTIVATE`) so showing or clicking **Dịch**, **Tóm tắt**, or **Giải thích** keeps focus in the source app.
+- **Streaming Result Panel:** Safe DOM-only Markdown rendering, elapsed wait counter, Copy (`✓` feedback), Retry, Pin/Unpin, drag/resize with remembered size, Escape dismiss, and inline newest-first History tray.
+- **Secure credentials & provider parity:** Chat Completions & Responses SSE streaming, `/models` discovery (including with blank model input), latency test, no-redirect HTTP client, and API key storage in **Windows Credential Manager** (`CredReadW`/`CredWriteW`/`CredDeleteW`).
+- **NSIS installer:** Configured in `src-tauri/tauri.conf.json` (`bundle.targets: ["nsis"]`, `installMode: "currentUser"`).
 
-## Planning documents
+## Build NSIS installer on Windows 10/11
 
-- [Feature inventory and Windows parity goal](../docs/superpowers/specs/2026-11-19-windows-tauri-feature-parity.md)
-- [Implementation plan and milestones](../docs/superpowers/plans/2026-11-19-windows-tauri-plan.md)
+Prerequisites: Node.js 20+, Rust stable (`x86_64-pc-windows-msvc`), Visual Studio C++ Build Tools, WebView2 Runtime (preinstalled on Windows 11).
 
-The intended Tauri 2 layout is documented in the plan. Keep all eventual Windows code, dependencies, assets, and build scripts under this directory; do not add them to the root Swift package.
+```powershell
+cd windows-tauri
+npm install
+npm run build
+cd src-tauri
+cargo test
+cd ..
+npm run tauri -- build --bundles nsis
+```
+
+Installer output:
+`windows-tauri/src-tauri/target/release/bundle/nsis/Dola Lite_1.0.0_x64-setup.exe`
+
+## Automated CI Release
+
+Pushing a version tag (`v*`) triggers `.github/workflows/release.yml`, which runs tests and builds both `DolaLite-<tag>-macOS-arm64.zip` and `DolaLite-<tag>-windows-x64-setup.exe` (NSIS) on `macos-15` and `windows-latest` runners.
+
+## Phase 0 diagnostic spike
+
+The standalone diagnostic CLI remains in `ui-automation-spike/` for isolating UIA provider behavior on Windows.

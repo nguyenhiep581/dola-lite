@@ -1,0 +1,94 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Dola Lite",
+  "version": "1.1.0",
+  "identifier": "com.hiep.dolalite",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "pill",
+        "title": "Dola Lite Pill",
+        "url": "index.html?view=pill",
+        "width": 310,
+        "height": 46,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": false
+      },
+      {
+        "label": "result",
+        "title": "Dola Lite",
+        "url": "index.html?view=result",
+        "width": 400,
+        "height": 360,
+        "minWidth": 320,
+        "minHeight": 240,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": false
+      },
+      {
+        "label": "settings",
+        "title": "Cài đặt API — Dola Lite",
+        "url": "index.html?view=settings",
+        "width": 480,
+        "height": 495,
+        "minWidth": 460,
+        "minHeight": 450,
+        "resizable": true,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "history",
+        "title": "Lịch sử — Dola Lite",
+        "url": "index.html?view=history",
+        "width": 740,
+        "height": 480,
+        "minWidth": 580,
+        "minHeight": 380,
+        "resizable": true,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
