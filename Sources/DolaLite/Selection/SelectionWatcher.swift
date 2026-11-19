@@ -27,23 +27,42 @@ final class SelectionWatcher {
             }
         }
         pollTask = Task.detached(priority: .utility) { [weak self] in
+            enum FrontmostState {
+                case external(pid: pid_t, primaryTop: CGFloat)
+                case ownApp
+                case none
+            }
             while !Task.isCancelled {
                 // Chromium-family apps (Chrome, VS Code, Cursor, Kiro) answer AX
                 // queries over IPC and can need far more than one runloop tick,
                 // so polling must run off the main thread with a patient timeout.
-                let front: (pid: pid_t, primaryTop: CGFloat)? = await MainActor.run {
-                    guard let front = NSWorkspace.shared.frontmostApplication,
-                          front.processIdentifier != ownPID else { return nil }
-                    return (front.processIdentifier, NSScreen.screens.first?.frame.maxY ?? 0)
+                let front: FrontmostState = await MainActor.run {
+                    guard let app = NSWorkspace.shared.frontmostApplication else { return .none }
+                    if app.processIdentifier == ownPID { return .ownApp }
+                    return .external(pid: app.processIdentifier, primaryTop: NSScreen.screens.first?.frame.maxY ?? 0)
                 }
-                let snapshot = front.flatMap { Self.readSelection(pid: $0.pid, primaryTop: $0.primaryTop) }
+                let snapshot: SelectionSnapshot?
+                if case let .external(pid, primaryTop) = front {
+                    snapshot = Self.readSelection(pid: pid, primaryTop: primaryTop)
+                } else {
+                    snapshot = nil
+                }
                 let uptime = ProcessInfo.processInfo.systemUptime
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     guard AXIsProcessTrusted() else { self.clear(); return }
-                    guard front != nil else { self.clear(); return }
-                    if let change = self.debouncer.observe(snapshot, at: uptime) {
-                        self.onSelection?(change.snapshot)
+                    switch front {
+                    case .ownApp:
+                        // Activating Dola Lite (e.g. History or Settings) must not
+                        // emit a synthetic selection clear that kills active results.
+                        return
+                    case .none:
+                        self.clear()
+                        return
+                    case .external:
+                        if let change = self.debouncer.observe(snapshot, at: uptime) {
+                            self.onSelection?(change.snapshot)
+                        }
                     }
                 }
                 try? await Task.sleep(nanoseconds: 120_000_000)

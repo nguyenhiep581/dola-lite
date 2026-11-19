@@ -69,6 +69,17 @@ pub fn run() {
                                 }
                             }
                         }
+                        WindowEvent::Focused(false) if label == "result" => {
+                            let is_pinned = app_handle
+                                .state::<AppState>()
+                                .coordinator
+                                .lock()
+                                .unwrap()
+                                .is_pinned;
+                            if !is_pinned && win_clone.is_visible().unwrap_or(false) {
+                                cancel_and_hide_result(&app_handle);
+                            }
+                        }
                         WindowEvent::Resized(physical) if label == "result" => {
                             let state = app_handle.state::<AppState>();
                             if state.ignoring_result_resize.load(Ordering::SeqCst)

@@ -72,8 +72,8 @@ import Testing
         }
     }
 
-    @Test func storageFailureLeavesConfigurationUntouched() throws {
-        try withIsolatedDefaults { defaults in
+    @Test func storageFailureLeavesConfigurationUntouched() {
+        withIsolatedDefaults { defaults in
             let keys = MemoryAPIKeyStore()
             let store = APISettingsStore(defaults: defaults, keyStore: keys)
             keys.writeError = .storageFailure
@@ -132,8 +132,8 @@ import Testing
         }
     }
 
-    @Test func failedDeleteRetainsKey() throws {
-        try withIsolatedDefaults { defaults in
+    @Test func failedDeleteRetainsKey() {
+        withIsolatedDefaults { defaults in
             let keys = MemoryAPIKeyStore(key: "existing-fixture")
             keys.deleteError = .storageFailure
             let store = APISettingsStore(defaults: defaults, keyStore: keys)
