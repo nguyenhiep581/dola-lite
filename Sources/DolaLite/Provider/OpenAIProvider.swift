@@ -50,6 +50,70 @@ struct APIRequestBuilder {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
+
+    static func modelsRequest(snapshot: APICredentialsSnapshot) throws -> URLRequest {
+        let baseURL = try snapshot.configuration.validatedBaseURL()
+        let key = snapshot.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw APISettingsError.missingAPIKey }
+        guard !key.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw APISettingsError.invalidAPIKey
+        }
+        guard let url = URL(string: baseURL + "/models") else {
+            throw APISettingsError.invalidBaseURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(Self.allowedClientUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        return request
+    }
+}
+
+enum APIModelCatalog {
+    private static let maximumResponseBytes = 1_048_576
+
+    static func fetch(snapshot: APICredentialsSnapshot,
+                      transport: any APITransport = URLSessionStreamTransport()) async throws -> [String] {
+        let request = try APIRequestBuilder.modelsRequest(snapshot: snapshot)
+        do {
+            let response = try await transport.stream(for: request)
+            return try await withTaskCancellationHandler {
+                defer { response.cancel() }
+                if let error = APIProviderError.status(response.response.statusCode) { throw error }
+
+                var data = Data()
+                for try await chunk in response.bytes {
+                    try Task.checkCancellation()
+                    guard data.count <= maximumResponseBytes,
+                          chunk.count <= maximumResponseBytes - data.count else {
+                        throw APIProviderError.responseTooLarge
+                    }
+                    data.append(chunk)
+                }
+
+                guard let object = try? JSONSerialization.jsonObject(with: data),
+                      let payload = object as? [String: Any],
+                      let entries = payload["data"] as? [[String: Any]] else {
+                    throw APIProviderError.invalidResponse
+                }
+
+                let identifiers = entries.compactMap { $0["id"] as? String }
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }
+                return Array(Set(identifiers)).sorted {
+                    $0.localizedStandardCompare($1) == .orderedAscending
+                }
+            } onCancel: {
+                response.cancel()
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw APIProviderError.safe(error)
+        }
+    }
 }
 
 @MainActor

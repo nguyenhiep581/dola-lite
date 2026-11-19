@@ -5,15 +5,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var configurationItem: NSMenuItem!
     private let settings = APISettingsStore()
+    private let historyStore = HistoryStore()
     private var settingsWindow: APISettingsWindow!
+    private var historyWindow: HistoryWindowController!
     private var watcher: SelectionWatcher!
     private var coordinator: PanelCoordinator!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         settingsWindow = APISettingsWindow(store: settings)
+        historyWindow = HistoryWindowController(store: historyStore)
         let provider = OpenAIProvider(configuration: { [settings] in try settings.snapshot() })
-        coordinator = PanelCoordinator(pill: PillPanel(), result: ResultPanel(),
+        coordinator = PanelCoordinator(pill: PillPanel(), result: ResultPanel(historyStore: historyStore),
                                        provider: provider, settings: settings,
+                                       historyStore: historyStore,
                                        openSettings: { [weak self] in self?.showSettings() })
         watcher = SelectionWatcher()
         watcher.onSelection = { [weak self] in self?.coordinator.handleSelection($0) }
@@ -42,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsItem = NSMenuItem(title: "Cài đặt API…", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let historyItem = NSMenuItem(title: "Lịch sử…", action: #selector(showHistory), keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
         let accessibilityItem = NSMenuItem(title: "Kiểm tra quyền Trợ năng…", action: #selector(checkAccessibility), keyEquivalent: "")
         accessibilityItem.target = self
         menu.addItem(accessibilityItem)
@@ -69,5 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             AccessibilityOnboarding.openSettings()
         }
+    }
+
+    @objc private func showHistory() {
+        historyWindow.present()
     }
 }

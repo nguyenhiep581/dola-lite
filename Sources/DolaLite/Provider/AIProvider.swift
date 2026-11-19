@@ -1,6 +1,6 @@
 import Foundation
 
-enum Skill: String, CaseIterable, Sendable {
+enum Skill: String, CaseIterable, Codable, Sendable {
     case translate, summarize, explain
 
     var displayName: String {

@@ -17,25 +17,22 @@ final class PillPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isReleasedWhenClosed = false
         let card = PanelCardView()
-        card.cornerRadius = 20
+        card.cornerRadius = DesignTokens.Radius.pill
         contentView = card
         let stack = NSStackView()
         stack.orientation = .horizontal
-        stack.spacing = 2
-        stack.edgeInsets = NSEdgeInsets(top: 4, left: 7, bottom: 4, right: 7)
+        stack.spacing = DesignTokens.Spacing.xs
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
         stack.distribution = .fillProportionally
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
         for (index, skill) in skills.enumerated() {
-            let button = NSButton(title: skill.displayName, target: self, action: #selector(tapped(_:)))
+            let button = HoverPillButton(frame: .zero)
+            button.title = skill.displayName
+            button.target = self
+            button.action = #selector(tapped(_:))
             button.tag = index
             button.image = NSImage(systemSymbolName: ["character.bubble", "text.alignleft", "lightbulb"][index], accessibilityDescription: skill.displayName)
-            button.imagePosition = .imageLeading
-            button.imageHugsTitle = true
-            button.bezelStyle = .inline
-            button.isBordered = false
-            button.font = .systemFont(ofSize: 12, weight: .medium)
-            button.contentTintColor = .labelColor
             button.toolTip = skill.displayName
             button.setAccessibilityLabel(skill.displayName)
             stack.addArrangedSubview(button)

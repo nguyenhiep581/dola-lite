@@ -72,6 +72,80 @@ import Testing
             )
         }
     }
+
+    @Test func buildsAuthenticatedModelsRequestFromConfiguredEndpoint() throws {
+        let request = try APIRequestBuilder.modelsRequest(snapshot: APICredentialsSnapshot(
+            configuration: configuration(wire: APIConfiguration.responsesWire), apiKey: "fixture-key"
+        ))
+        #expect(request.url?.absoluteString == "https://api.example.test/v1/models")
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
+        #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(request.httpBody == nil)
+    }
+
+    @Test func buildsModelsRequestWhenModelFieldIsEmpty() throws {
+        let emptyModelConfig = APIConfiguration(baseURL: "https://api.example.test/v1/",
+                                                model: "   ",
+                                                reasoningEffort: "high",
+                                                wireAPI: APIConfiguration.chatWire)
+        let request = try APIRequestBuilder.modelsRequest(snapshot: APICredentialsSnapshot(
+            configuration: emptyModelConfig, apiKey: "fixture-key"
+        ))
+        #expect(request.url?.absoluteString == "https://api.example.test/v1/models")
+    }
+}
+
+@Suite struct APIModelCatalogTests {
+    @Test @MainActor
+    func fetchesDeduplicatedSortedModelIdentifiers() async throws {
+        let transport = FixtureAPITransport(status: 200, body: Data(#"{"data":[{"id":"model-z"},{"id":"model-a"},{"id":"model-z"},{"name":"without-id"},{"id":"  "}]}"#.utf8))
+        let models = try await APIModelCatalog.fetch(snapshot: fixtureSnapshot, transport: transport)
+        #expect(models == ["model-a", "model-z"])
+        #expect(await transport.requestCount == 1)
+    }
+
+    @Test @MainActor
+    func rejectsMalformedModelList() async {
+        let transport = FixtureAPITransport(status: 200, body: Data(#"{"models":[{"id":"fixture"}]}"#.utf8))
+        do {
+            _ = try await APIModelCatalog.fetch(snapshot: fixtureSnapshot, transport: transport)
+            Issue.record("Expected an invalid response")
+        } catch {
+            #expect(error as? APIProviderError == .invalidResponse)
+        }
+    }
+
+    @Test @MainActor
+    func mapsModelListHTTPStatus() async {
+        let transport = FixtureAPITransport(status: 401, body: Data("private response body".utf8))
+        do {
+            _ = try await APIModelCatalog.fetch(snapshot: fixtureSnapshot, transport: transport)
+            Issue.record("Expected an unauthorized response")
+        } catch {
+            #expect(error as? APIProviderError == .unauthorized)
+            #expect(error.localizedDescription.contains("private response body") == false)
+        }
+    }
+
+    @Test @MainActor
+    func sanitizesTransportNetworkErrorsDuringModelFetch() async {
+        let transport = ThrowingAPITransport(error: URLError(.notConnectedToInternet))
+        do {
+            _ = try await APIModelCatalog.fetch(snapshot: fixtureSnapshot, transport: transport)
+            Issue.record("Expected a safe network error")
+        } catch {
+            #expect(error as? APIProviderError == .network)
+        }
+    }
+}
+
+private final class ThrowingAPITransport: APITransport, @unchecked Sendable {
+    let error: Error
+    init(error: Error) { self.error = error }
+    func stream(for request: URLRequest) async throws -> APIStream {
+        throw error
+    }
 }
 
 @Suite struct APISSEDecoderTests {

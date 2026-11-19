@@ -37,21 +37,26 @@ struct APIConfiguration: Codable, Equatable, Sendable {
         wireAPI = try container.decodeIfPresent(String.self, forKey: .wireAPI) ?? APIConfiguration.responsesWire
     }
 
-    func validated() throws -> APIConfiguration {
-        var result = self
-        result.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        result.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        result.reasoningEffort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard let components = URLComponents(string: result.baseURL),
+    func validatedBaseURL() throws -> String {
+        var trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(), ["https", "http"].contains(scheme),
               let host = components.host, !host.isEmpty,
               components.user == nil, components.password == nil,
               components.query == nil, components.fragment == nil,
               components.url != nil,
-              !result.baseURL.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
             throw APISettingsError.invalidBaseURL
         }
-        while result.baseURL.hasSuffix("/") { result.baseURL.removeLast() }
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        return trimmed
+    }
+
+    func validated() throws -> APIConfiguration {
+        var result = self
+        result.baseURL = try validatedBaseURL()
+        result.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.reasoningEffort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !result.model.isEmpty,
               !result.model.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
             throw APISettingsError.invalidModel

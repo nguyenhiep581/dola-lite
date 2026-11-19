@@ -8,6 +8,7 @@ final class PanelCoordinator {
     private let result: ResultPanel
     private let provider: AIProvider
     private let settings: APISettingsStore
+    private let historyStore: HistoryStore?
     private let openSettings: () -> Void
     private var selection: SelectionSnapshot?
     private var retryRequest: (Skill, String, NSRect?)?
@@ -16,19 +17,24 @@ final class PanelCoordinator {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var suspended = false
+    private var isPinned = false
 
     init(pill: PillPanel, result: ResultPanel, provider: AIProvider,
-         settings: APISettingsStore, openSettings: @escaping () -> Void) {
+         settings: APISettingsStore, historyStore: HistoryStore? = nil,
+         openSettings: @escaping () -> Void) {
         self.pill = pill
         self.result = result
         self.provider = provider
         self.settings = settings
+        self.historyStore = historyStore
         self.openSettings = openSettings
         pill.onSkillTap = { [weak self] skill, text in
             guard let self else { return }
             self.run(skill: skill, text: text, anchor: self.pill.frame)
         }
         result.onClose = { [weak self] in self?.dismissAll() }
+        result.onPinChange = { [weak self] pinned in self?.isPinned = pinned }
+        result.onSelectHistory = { [weak self] in self?.stopCurrentRequestForHistory() }
         result.onRetry = { [weak self] in
             guard let self, let request = self.retryRequest else { return }
             self.run(skill: request.0, text: request.1, anchor: request.2)
@@ -54,6 +60,14 @@ final class PanelCoordinator {
     func handleSelection(_ snapshot: SelectionSnapshot?) {
         guard snapshot != selection else { return }
         selection = snapshot
+        if isPinned {
+            if !suspended, let snapshot {
+                pill.show(text: snapshot.text, near: snapshot.bounds)
+            } else {
+                pill.dismiss()
+            }
+            return
+        }
         dismissAll()
         guard !suspended, let snapshot else { return }
         pill.show(text: snapshot.text, near: snapshot.bounds)
@@ -71,6 +85,7 @@ final class PanelCoordinator {
         requestTask?.cancel()
         requestTask = nil
         retryRequest = nil
+        isPinned = false
         pill.dismiss()
         result.dismiss()
     }
@@ -93,6 +108,10 @@ final class PanelCoordinator {
         let point = NSEvent.mouseLocation
         if pill.isVisible && pill.frame.contains(point) { return }
         if result.isVisible && result.frame.contains(point) { return }
+        if isPinned && result.isVisible {
+            pill.dismiss()
+            return
+        }
         dismissAll()
     }
 
@@ -104,6 +123,7 @@ final class PanelCoordinator {
         }
         generation = UUID()
         let requestID = generation
+        let requestModel = settings.configuration.model
         requestTask?.cancel()
         retryRequest = (skill, text, anchor)
         pill.dismiss()
@@ -119,6 +139,14 @@ final class PanelCoordinator {
                 }
                 guard generation == requestID, !Task.isCancelled else { return }
                 result.finish()
+                if let historyStore, !result.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    do {
+                        try historyStore.add(HistoryEntry(skill: skill, model: requestModel,
+                                                          sourceText: text, resultText: result.fullText))
+                    } catch {
+                        result.showHistorySaveWarning(error.localizedDescription)
+                    }
+                }
             } catch {
                 guard generation == requestID, !Task.isCancelled else { return }
                 result.fail(error.localizedDescription)
@@ -126,4 +154,12 @@ final class PanelCoordinator {
             if generation == requestID { requestTask = nil }
         }
     }
+
+    private func stopCurrentRequestForHistory() {
+        generation = UUID()
+        requestTask?.cancel()
+        requestTask = nil
+        retryRequest = nil
+    }
+
 }

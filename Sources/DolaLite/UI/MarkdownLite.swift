@@ -7,8 +7,12 @@ enum MarkdownLite {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 4
         paragraph.paragraphSpacing = 6
+        let headingParagraph = NSMutableParagraphStyle()
+        headingParagraph.lineSpacing = 3
+        headingParagraph.paragraphSpacing = 5
+        headingParagraph.paragraphSpacingBefore = 8
         let base: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor,
+            .font: DesignTokens.Typography.body, .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraph
         ]
         var codeBlock = false
@@ -21,13 +25,23 @@ enum MarkdownLite {
             var line = raw
             var attributes = base
             if codeBlock {
-                attributes[.font] = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                attributes[.backgroundColor] = NSColor.quaternaryLabelColor.withAlphaComponent(0.08)
+                attributes[.font] = DesignTokens.Typography.code
+                attributes[.backgroundColor] = DesignTokens.Colors.codeBackground
                 output.append(NSAttributedString(string: line, attributes: attributes))
             } else {
-                if line.hasPrefix("### ") { line.removeFirst(4); attributes[.font] = NSFont.systemFont(ofSize: 14, weight: .semibold) }
-                else if line.hasPrefix("## ") { line.removeFirst(3); attributes[.font] = NSFont.systemFont(ofSize: 15, weight: .semibold) }
-                else if line.hasPrefix("# ") { line.removeFirst(2); attributes[.font] = NSFont.systemFont(ofSize: 17, weight: .semibold) }
+                if line.hasPrefix("### ") {
+                    line.removeFirst(4)
+                    attributes[.font] = DesignTokens.Typography.heading3
+                    if index > 0 { attributes[.paragraphStyle] = headingParagraph }
+                } else if line.hasPrefix("## ") {
+                    line.removeFirst(3)
+                    attributes[.font] = DesignTokens.Typography.heading2
+                    if index > 0 { attributes[.paragraphStyle] = headingParagraph }
+                } else if line.hasPrefix("# ") {
+                    line.removeFirst(2)
+                    attributes[.font] = DesignTokens.Typography.heading1
+                    if index > 0 { attributes[.paragraphStyle] = headingParagraph }
+                }
                 if line.hasPrefix("- ") || line.hasPrefix("* ") { line = "• " + line.dropFirst(2) }
                 output.append(inline(line, base: attributes))
             }
@@ -49,11 +63,11 @@ enum MarkdownLite {
             let range: NSRange
             if match.range(at: 1).location != NSNotFound {
                 range = match.range(at: 1)
-                attributes[.font] = NSFont.systemFont(ofSize: 14, weight: .semibold)
+                attributes[.font] = DesignTokens.Typography.bodyBold
             } else {
                 range = match.range(at: 2)
-                attributes[.font] = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                attributes[.backgroundColor] = NSColor.quaternaryLabelColor.withAlphaComponent(0.08)
+                attributes[.font] = DesignTokens.Typography.code
+                attributes[.backgroundColor] = DesignTokens.Colors.codeBackground
             }
             result.append(NSAttributedString(string: source.substring(with: range), attributes: attributes))
             offset = NSMaxRange(match.range)
