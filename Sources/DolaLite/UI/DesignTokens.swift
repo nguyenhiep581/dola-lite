@@ -9,7 +9,7 @@ enum DesignTokens {
         static let pill: CGFloat = 20
         static let tray: CGFloat = 8
         static let control: CGFloat = 6
-        static let pillButton: CGFloat = 14
+        static let pillButton: CGFloat = 15
     }
 
     enum Spacing {
@@ -156,6 +156,11 @@ final class HoverPillButton: NSButton {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var intrinsicContentSize: NSSize {
+        let base = super.intrinsicContentSize
+        return NSSize(width: base.width + 16, height: max(30, base.height + 12))
+    }
 
     override var wantsUpdateLayer: Bool { true }
 

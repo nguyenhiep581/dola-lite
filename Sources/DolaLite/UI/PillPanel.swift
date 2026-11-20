@@ -21,8 +21,9 @@ final class PillPanel: NSPanel {
         contentView = card
         let stack = NSStackView()
         stack.orientation = .horizontal
+        stack.alignment = .centerY
         stack.spacing = DesignTokens.Spacing.xs
-        stack.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
+        stack.edgeInsets = NSEdgeInsets(top: 5, left: 5, bottom: 5, right: 5)
         stack.distribution = .fillProportionally
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
@@ -36,6 +37,7 @@ final class PillPanel: NSPanel {
             button.toolTip = skill.displayName
             button.setAccessibilityLabel(skill.displayName)
             stack.addArrangedSubview(button)
+            button.heightAnchor.constraint(equalToConstant: 30).isActive = true
         }
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
