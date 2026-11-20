@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (arm64)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Build DolaLite.app
+        run: bash scripts/make-app.sh
+
+      - name: Package macOS release archive
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          mkdir -p dist
+          ARCHIVE="dist/DolaLite-${TAG}-macOS-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent DolaLite.app "$ARCHIVE"
+          (cd dist && shasum -a 256 "DolaLite-${TAG}-macOS-arm64.zip" > "DolaLite-${TAG}-macOS-arm64.zip.sha256")
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: dist/*
+
+  build-windows:
+    name: Build Windows NSIS Installer (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: windows-tauri/package-lock.json
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: windows-tauri
+        run: npm ci
+
+      - name: Typecheck and build frontend
+        working-directory: windows-tauri
+        run: npm run build
+
+      - name: Run Rust backend tests
+        working-directory: windows-tauri/src-tauri
+        run: cargo test
+
+      - name: Build Windows NSIS installer (Tauri 2)
+        working-directory: windows-tauri
+        run: npm run tauri -- build --bundles nsis
+
+      - name: Collect NSIS installer and checksum
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $installer = Get-ChildItem -Path "windows-tauri/src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "NSIS installer was not produced."
+          }
+          $outName = "DolaLite-$($env:TAG)-windows-x64-setup.exe"
+          $outPath = Join-Path "dist" $outName
+          Copy-Item $installer.FullName $outPath
+          $hash = (Get-FileHash -Path $outPath -Algorithm SHA256).Hash.ToLower()
+          "$hash  $outName" | Out-File -FilePath "$outPath.sha256" -Encoding ascii
+
+      - name: Upload Windows NSIS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-release
+          path: dist/*
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: release-assets
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-nsis-release
+          path: release-assets
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          cat <<'EOF' > release-notes.md
+          ## Dola Lite (${TAG})
+
+          ### macOS (`DolaLite-${TAG}-macOS-arm64.zip`)
+          Native Swift/AppKit menu-bar app for macOS 13+ (Apple Silicon):
+          - Floating quick-action pill (**Dịch**, **Tóm tắt**, **Giải thích**) with hover feedback
+          - Resizable, movable, pinnable streaming Result Panel with Markdown rendering, Copy confirmation, and remembered size
+          - Local private history (up to 200 completed results), inline history tray, and Master-Detail History window
+          - Configurable OpenAI-compatible provider (Chat Completions & Responses), `/models` discovery, latency test, and Launch at macOS login (`SMAppService`)
+
+          ### Windows (`DolaLite-${TAG}-windows-x64-setup.exe`)
+          Standalone Windows 10/11 x64 NSIS installer built with **Rust + Tauri 2**:
+          - Per-user NSIS installer (no Admin UAC prompt required), system tray menu, and **Launch at Windows login**
+          - Background Windows UI Automation selection watcher (`CUIAutomation8` / `IUIAutomation2`, Per-Monitor V2 DPI, never touches clipboard)
+          - Non-activating floating quick-action pill (`WS_EX_NOACTIVATE` + `MA_NOACTIVATE`), streaming Markdown Result Panel, Pin/Copy/Retry/Resize, inline & Master-Detail History
+          - API keys stored privately in Windows Credential Manager (never in WebView storage, logs, or history)
+          EOF
+          sed -i "s/\${TAG}/${TAG}/g" release-notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" release-assets/* --title "Dola Lite $TAG" --notes-file release-notes.md
+          fi
