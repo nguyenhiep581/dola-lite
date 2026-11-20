@@ -37,7 +37,15 @@ enum DesignTokens {
     enum Colors {
         static var cardSurface: NSColor { .controlBackgroundColor }
         static var editorSurface: NSColor { .textBackgroundColor }
-        static var sidebarSurface: NSColor { .underPageBackgroundColor }
+        // Native macOS sidebar tint (avoid .underPageBackgroundColor, which is
+        // dark #9A9A9A PDF-canvas gray in Light Mode).
+        static var sidebarSurface: NSColor {
+            NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                    ? NSColor(calibratedWhite: 0.14, alpha: 1)
+                    : NSColor(calibratedRed: 0.953, green: 0.957, blue: 0.965, alpha: 1)
+            }
+        }
         static var hoverSurface: NSColor { NSColor.labelColor.withAlphaComponent(0.06) }
         static var activeSurface: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.14) }
         static var selectedRowSurface: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.14) }

@@ -52,9 +52,9 @@ final class HistoryWindowController: NSWindowController {
         titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         titleLabel.textColor = .labelColor
         countLabel.font = DesignTokens.Typography.caption
-        countLabel.textColor = .tertiaryLabelColor
-        clearButton.bezelStyle = .inline
-        clearButton.font = .systemFont(ofSize: 11, weight: .medium)
+        countLabel.textColor = .secondaryLabelColor
+        clearButton.bezelStyle = .rounded
+        clearButton.controlSize = .small
         clearButton.target = self
         clearButton.action = #selector(clearHistory)
 
