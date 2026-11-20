@@ -6,6 +6,9 @@ BIN_DIR="$(swift build --package-path "$PROJECT_DIR" -c release --show-bin-path)
 APP_DIR="$PROJECT_DIR/DolaLite.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/DolaLite" "$APP_DIR/Contents/MacOS/DolaLite"
+if [ -f "$PROJECT_DIR/Assets/AppIcon.icns" ]; then
+  cp "$PROJECT_DIR/Assets/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
+fi
 /usr/libexec/PlistBuddy -c 'Clear dict' "$APP_DIR/Contents/Info.plist" 2>/dev/null || true
 python3 - "$APP_DIR/Contents/Info.plist" <<'PY'
 import plistlib,sys
@@ -15,6 +18,7 @@ with open(sys.argv[1],'wb') as out:
       'CFBundleIdentifier':'com.hiep.dolalite',
       'CFBundleName':'Dola Lite',
       'CFBundleDisplayName':'Dola Lite',
+      'CFBundleIconFile':'AppIcon',
       'CFBundlePackageType':'APPL',
       'CFBundleShortVersionString':'1.1.0',
       'CFBundleVersion':'2',
