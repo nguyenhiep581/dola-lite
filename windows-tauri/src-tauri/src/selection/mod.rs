@@ -20,7 +20,13 @@ pub struct Selection {
     pub foreground_process_id: u32,
     pub element_process_id: u32,
     pub text: String,
+    /// Cursor-independent bounding box used by `WatchTracker` for selection
+    /// identity and drag stability.
     pub bounds: Option<Bounds>,
+    /// Cleaned per-range bounding rectangles (filtered for NaN/degenerate/origin
+    /// outliers) used once at Pill placement time to filter off-monitor `sr-only`
+    /// spans without polluting `WatchTracker` stability.
+    pub rects: Vec<Bounds>,
     pub cursor: Option<(f64, f64)>,
 }
 
@@ -175,13 +181,14 @@ pub fn same_selection_identity(left: &Selection, right: &Selection) -> bool {
     }
 }
 
-pub fn union_bounds(values: &[f64]) -> Option<Bounds> {
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut found = false;
+const MAX_STORED_RECTS: usize = 512;
 
+/// Parses and cleans raw `[x, y, width, height, ...]` values from UIA
+/// `GetBoundingRectangles()`, dropping non-finite/non-positive rects, extreme
+/// CSS `sr-only` coordinates (`<-8000` / `>32000`), and degenerate `(0, 0)`
+/// origin spans emitted by Chromium/GitHub whenever real rects exist.
+pub fn clean_selection_rects(values: &[f64]) -> Vec<Bounds> {
+    let mut rects = Vec::new();
     for rect in values.chunks_exact(4) {
         let [x, y, width, height] = [rect[0], rect[1], rect[2], rect[3]];
         let right = x + width;
@@ -194,22 +201,65 @@ pub fn union_bounds(values: &[f64]) -> Option<Bounds> {
             || !bottom.is_finite()
             || width <= 0.0
             || height <= 0.0
+            || x < -8_000.0
+            || y < -8_000.0
+            || x > 32_000.0
+            || y > 32_000.0
         {
             continue;
         }
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(right);
-        max_y = max_y.max(bottom);
-        found = true;
+        rects.push(Bounds {
+            x,
+            y,
+            width,
+            height,
+        });
     }
+    if rects.is_empty() {
+        return rects;
+    }
+    let has_non_origin = rects.iter().any(|r| r.x.abs() > 1.0 || r.y.abs() > 1.0);
+    if has_non_origin {
+        rects.retain(|r| r.x.abs() > 1.0 || r.y.abs() > 1.0);
+    }
+    if rects.len() > MAX_STORED_RECTS {
+        // Keep the first half and tail rects so both the start and cursor-end
+        // of large multi-token syntax-highlighted selections remain represented.
+        let head = MAX_STORED_RECTS / 2;
+        let tail_start = rects.len() - (MAX_STORED_RECTS - head);
+        let mut trimmed = Vec::with_capacity(MAX_STORED_RECTS);
+        trimmed.extend_from_slice(&rects[..head]);
+        trimmed.extend_from_slice(&rects[tail_start..]);
+        return trimmed;
+    }
+    rects
+}
 
-    found.then_some(Bounds {
+pub fn union_of_bounds(rects: &[Bounds]) -> Option<Bounds> {
+    if rects.is_empty() {
+        return None;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for r in rects {
+        min_x = min_x.min(r.x);
+        min_y = min_y.min(r.y);
+        max_x = max_x.max(r.x + r.width);
+        max_y = max_y.max(r.y + r.height);
+    }
+    Some(Bounds {
         x: min_x,
         y: min_y,
         width: max_x - min_x,
         height: max_y - min_y,
     })
+}
+
+/// Cursor-independent union of cleaned UIA bounding rectangles.
+pub fn union_bounds(values: &[f64]) -> Option<Bounds> {
+    union_of_bounds(&clean_selection_rects(values))
 }
 
 pub fn sanitize_selection(source: &str) -> Option<String> {
@@ -239,6 +289,95 @@ pub struct MonitorWorkArea {
     pub scale_factor: f64,
 }
 
+fn bounds_intersects_any_monitor(rect: Bounds, monitors: &[MonitorWorkArea]) -> bool {
+    if monitors.is_empty() {
+        return true;
+    }
+    monitors.iter().any(|m| {
+        let right = rect.x + rect.width.max(1.0);
+        let bottom = rect.y + rect.height.max(1.0);
+        let m_right = m.bounds.x + m.bounds.width;
+        let m_bottom = m.bounds.y + m.bounds.height;
+        rect.x < m_right && right > m.bounds.x && rect.y < m_bottom && bottom > m.bounds.y
+    })
+}
+
+fn target_monitor_for_point(x: f64, y: f64, monitors: &[MonitorWorkArea]) -> MonitorWorkArea {
+    monitors
+        .iter()
+        .copied()
+        .find(|m| {
+            x >= m.bounds.x
+                && x <= m.bounds.x + m.bounds.width
+                && y >= m.bounds.y
+                && y <= m.bounds.y + m.bounds.height
+        })
+        .or_else(|| monitors.first().copied())
+        .unwrap_or(MonitorWorkArea {
+            bounds: Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            scale_factor: 1.0,
+        })
+}
+
+/// Computes a clamped top-left physical pixel position and physical dimensions
+/// for the Pill popover from per-range selection rectangles, filtering out
+/// off-monitor rects (such as CSS `sr-only` / scrolled-out spans) per rect and
+/// collapsing oversized multi-paragraph / ultra-wide selections toward the
+/// cursor ONCE at placement time (without affecting `WatchTracker` stability).
+pub fn compute_floating_rect_from_rects(
+    logical_w: f64,
+    logical_h: f64,
+    rects: &[Bounds],
+    fallback_anchor: Option<Bounds>,
+    cursor: Option<(f64, f64)>,
+    monitors: &[MonitorWorkArea],
+) -> (i32, i32, u32, u32) {
+    let in_monitor: Vec<Bounds> = rects
+        .iter()
+        .copied()
+        .filter(|r| bounds_intersects_any_monitor(*r, monitors))
+        .collect();
+    let base_anchor = union_of_bounds(&in_monitor)
+        .or_else(|| fallback_anchor.filter(|b| bounds_intersects_any_monitor(*b, monitors)));
+
+    let placed_anchor = match (base_anchor, cursor) {
+        (Some(u), Some((cx, cy))) => {
+            let mid_x = u.x + u.width / 2.0;
+            let mid_y = u.y + u.height / 2.0;
+            let target = target_monitor_for_point(mid_x, mid_y, monitors);
+            let scale = if target.scale_factor.is_finite() && target.scale_factor > 0.0 {
+                target.scale_factor
+            } else {
+                1.0
+            };
+            let clamped_x = cx.clamp(u.x, u.x + u.width);
+            let clamped_y = cy.clamp(u.y, u.y + u.height);
+            let dist = ((cx - clamped_x).powi(2) + (cy - clamped_y).powi(2)).sqrt();
+            // For tall multi-line or overly wide selections where the user just
+            // dragged with the mouse nearby, anchor cleanly right at the cursor.
+            // Keep `u` intact for keyboard selections when the cursor is far away.
+            if (u.height > 220.0 * scale || u.width > 600.0 * scale) && dist <= 140.0 * scale {
+                Some(Bounds {
+                    x: cx,
+                    y: cy - 12.0 * scale,
+                    width: 1.0,
+                    height: 24.0 * scale,
+                })
+            } else {
+                Some(u)
+            }
+        }
+        (other, _) => other,
+    };
+
+    compute_floating_rect(logical_w, logical_h, placed_anchor, cursor, monitors)
+}
+
 /// Computes a clamped top-left physical pixel position and physical dimensions
 /// on the monitor work area containing the selection anchor (or cursor fallback),
 /// supporting negative virtual-screen coordinates and mixed-DPI displays.
@@ -249,7 +388,8 @@ pub fn compute_floating_rect(
     cursor: Option<(f64, f64)>,
     monitors: &[MonitorWorkArea],
 ) -> (i32, i32, u32, u32) {
-    let rect = anchor.unwrap_or_else(|| {
+    let valid_anchor = anchor.filter(|b| bounds_intersects_any_monitor(*b, monitors));
+    let rect = valid_anchor.unwrap_or_else(|| {
         let (cx, cy) = cursor.unwrap_or((300.0, 200.0));
         Bounds {
             x: cx,
@@ -261,25 +401,7 @@ pub fn compute_floating_rect(
     let mid_x = rect.x + rect.width / 2.0;
     let mid_y = rect.y + rect.height / 2.0;
 
-    let target = monitors
-        .iter()
-        .copied()
-        .find(|m| {
-            mid_x >= m.bounds.x
-                && mid_x <= m.bounds.x + m.bounds.width
-                && mid_y >= m.bounds.y
-                && mid_y <= m.bounds.y + m.bounds.height
-        })
-        .or_else(|| monitors.first().copied())
-        .unwrap_or(MonitorWorkArea {
-            bounds: Bounds {
-                x: 0.0,
-                y: 0.0,
-                width: 1920.0,
-                height: 1080.0,
-            },
-            scale_factor: 1.0,
-        });
+    let target = target_monitor_for_point(mid_x, mid_y, monitors);
 
     let scale = if target.scale_factor.is_finite() && target.scale_factor > 0.0 {
         target.scale_factor
@@ -306,6 +428,54 @@ pub fn compute_floating_rect(
 
     let x = (mid_x - window_w / 2.0).clamp(min_x, max_x);
     let y = preferred_y.clamp(min_y, max_y);
+    (
+        x.round() as i32,
+        y.round() as i32,
+        window_w.round().max(1.0) as u32,
+        window_h.round().max(1.0) as u32,
+    )
+}
+
+/// Opens the Result Panel cleanly in-place anchored directly to the Pill's
+/// physical rectangle (centered horizontally on the Pill, top-aligned with the
+/// Pill's top edge, clamped cleanly inside the target monitor's work area).
+/// This prevents the tall Result Panel from jumping to the opposite side of a
+/// multi-line selection or flying to arbitrary coordinates.
+pub fn compute_result_rect(
+    logical_w: f64,
+    logical_h: f64,
+    anchor_rect: Option<Bounds>,
+    cursor: Option<(f64, f64)>,
+    monitors: &[MonitorWorkArea],
+) -> (i32, i32, u32, u32) {
+    let valid_anchor = anchor_rect.filter(|b| bounds_intersects_any_monitor(*b, monitors));
+    let (anchor_mid_x, anchor_top_y, anchor_mid_y) = match valid_anchor {
+        Some(rect) => (rect.x + rect.width / 2.0, rect.y, rect.y + rect.height / 2.0),
+        None => {
+            let (cx, cy) = cursor.unwrap_or((300.0, 200.0));
+            (cx, cy, cy)
+        }
+    };
+
+    let target = target_monitor_for_point(anchor_mid_x, anchor_mid_y, monitors);
+    let scale = if target.scale_factor.is_finite() && target.scale_factor > 0.0 {
+        target.scale_factor
+    } else {
+        1.0
+    };
+    let margin = (10.0 * scale).round();
+    let max_allowed_w = (target.bounds.width - margin * 2.0).max(1.0);
+    let max_allowed_h = (target.bounds.height - margin * 2.0).max(1.0);
+    let window_w = (logical_w * scale).min(max_allowed_w);
+    let window_h = (logical_h * scale).min(max_allowed_h);
+
+    let min_x = target.bounds.x + margin;
+    let max_x = (target.bounds.x + target.bounds.width - margin - window_w).max(min_x);
+    let min_y = target.bounds.y + margin;
+    let max_y = (target.bounds.y + target.bounds.height - margin - window_h).max(min_y);
+
+    let x = (anchor_mid_x - window_w / 2.0).clamp(min_x, max_x);
+    let y = anchor_top_y.clamp(min_y, max_y);
     (
         x.round() as i32,
         y.round() as i32,
@@ -370,6 +540,7 @@ mod tests {
                 width: 80.0,
                 height: 18.0,
             }),
+            rects: vec![],
             cursor: None,
         };
         assert_eq!(
@@ -411,5 +582,127 @@ mod tests {
             ),
             WatchAction::EmitDeselection
         );
+    }
+
+    #[test]
+    fn filters_chromium_origin_and_sr_only_outliers_without_polluting_tracker() {
+        let monitors = [MonitorWorkArea {
+            bounds: Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1040.0,
+            },
+            scale_factor: 1.0,
+        }];
+        // Real selection at (500, 400) polluted by a (0, 0) span AND a CSS sr-only (-9999, 400) span.
+        let polluted = [
+            0.0, 0.0, 12.0, 18.0, -9999.0, 400.0, 10.0, 18.0, 500.0, 400.0, 220.0, 20.0,
+        ];
+        let rects = clean_selection_rects(&polluted);
+        assert_eq!(
+            rects,
+            vec![Bounds {
+                x: 500.0,
+                y: 400.0,
+                width: 220.0,
+                height: 20.0,
+            }]
+        );
+        // Bounds are strictly cursor-independent (safe for WatchTracker).
+        assert_eq!(union_bounds(&polluted), Some(rects[0]));
+
+        // Even an off-monitor rect at x = -2000 (not dropped by -8000 cutoff) is filtered
+        // per-rect against monitors before Pill placement, never flinging the Pill left.
+        let with_off_monitor = vec![
+            Bounds {
+                x: -2000.0,
+                y: 400.0,
+                width: 10.0,
+                height: 18.0,
+            },
+            Bounds {
+                x: 500.0,
+                y: 400.0,
+                width: 220.0,
+                height: 20.0,
+            },
+        ];
+        let (px, py, pw, ph) = compute_floating_rect_from_rects(
+            336.0,
+            68.0,
+            &with_off_monitor,
+            None,
+            Some((680.0, 410.0)),
+            &monitors,
+        );
+        assert_eq!((px, py, pw, ph), (442, 322, 336, 68));
+
+        // Tall 500px selection collapses near the cursor ONLY at Pill placement time.
+        let tall = vec![Bounds {
+            x: 400.0,
+            y: 100.0,
+            width: 300.0,
+            height: 500.0,
+        }];
+        let (tx, ty, _, _) = compute_floating_rect_from_rects(
+            336.0,
+            68.0,
+            &tall,
+            None,
+            Some((620.0, 580.0)),
+            &monitors,
+        );
+        // Anchored near cursor (620, 568) rather than y=100: mid_x=620.5 -> x=453, y=568-68-10=490.
+        assert_eq!((tx, ty), (453, 490));
+
+        // Keyboard selection with unrelated faraway cursor preserves valid on-screen bounds!
+        let single_line = vec![Bounds {
+            x: 500.0,
+            y: 400.0,
+            width: 220.0,
+            height: 20.0,
+        }];
+        let (kx, ky, _, _) = compute_floating_rect_from_rects(
+            336.0,
+            68.0,
+            &single_line,
+            None,
+            Some((1800.0, 950.0)),
+            &monitors,
+        );
+        assert_eq!((kx, ky), (442, 322));
+    }
+
+    #[test]
+    fn result_rect_opens_in_place_at_pill_location_and_clamps_smoothly() {
+        let monitors = [MonitorWorkArea {
+            bounds: Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1040.0,
+            },
+            scale_factor: 1.0,
+        }];
+        let pill = Bounds {
+            x: 600.0,
+            y: 300.0,
+            width: 336.0,
+            height: 68.0,
+        };
+        let (x, y, w, h) = compute_result_rect(400.0, 360.0, Some(pill), None, &monitors);
+        // Centered on pill (mid_x = 768 -> x = 568), top-aligned at y = 300.
+        assert_eq!((x, y, w, h), (568, 300, 400, 360));
+
+        // Near bottom edge: slides up only enough to stay above taskbar, keeping same x.
+        let low_pill = Bounds {
+            x: 600.0,
+            y: 920.0,
+            width: 336.0,
+            height: 68.0,
+        };
+        let (lx, ly, lw, lh) = compute_result_rect(400.0, 360.0, Some(low_pill), None, &monitors);
+        assert_eq!((lx, ly, lw, lh), (568, 670, 400, 360));
     }
 }

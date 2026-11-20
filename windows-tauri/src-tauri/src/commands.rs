@@ -3,12 +3,15 @@ use crate::provider::{
     build_http_client, fetch_models as provider_fetch_models, stream_skill,
     test_connection as provider_test_connection, ConnectionTestResult, Skill,
 };
-use crate::selection::{compute_floating_rect, Bounds, MonitorWorkArea, Selection};
+use crate::selection::{
+    compute_floating_rect_from_rects, compute_result_rect, Bounds, MonitorWorkArea, Selection,
+};
 use crate::settings::{ApiConfiguration, ApiCredentialsSnapshot, SettingsStore};
 use crate::tray::refresh_tray_labels;
 use crate::windows_shell::{
-    hide_hwnd_on_main_thread, is_hwnd_foreground, is_hwnd_visible, set_clipboard_text,
-    show_pill_at_on_main_thread, show_result_at_on_main_thread, shutdown_raw_input_watcher,
+    current_cursor_pos, foreground_result_on_main_thread, get_hwnd_rect, hide_hwnd_on_main_thread,
+    is_hwnd_foreground, is_hwnd_visible, set_clipboard_text, show_pill_at_on_main_thread,
+    show_result_at_on_main_thread, shutdown_raw_input_watcher,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -68,6 +71,7 @@ pub struct CoordinatorState {
     pub active_generation: Option<String>,
     pub active_task: Option<JoinHandle<()>>,
     pub last_selection: Option<Selection>,
+    pub last_pill_rect: Option<Bounds>,
     pub retry_request: Option<(Skill, String)>,
     pub is_pinned: bool,
     pub suspended: bool,
@@ -104,6 +108,7 @@ impl AppState {
     pub fn shutdown(&self) {
         self.stop_flag.store(true, Ordering::SeqCst);
         shutdown_raw_input_watcher(&self.raw_input_hwnd);
+        let _ = self.settings.lock().unwrap().persist_result_size_if_dirty();
         let mut coord = self.coordinator.lock().unwrap();
         coord.active_generation = None;
         if let Some(task) = coord.active_task.take() {
@@ -164,8 +169,20 @@ pub fn handle_selection_detected<R: Runtime>(app: &AppHandle<R>, selection: Sele
             }
         }
         let monitors = monitor_work_areas(&app_handle);
-        let (x, y, w, h) =
-            compute_floating_rect(336.0, 68.0, selection.bounds, selection.cursor, &monitors);
+        let (x, y, w, h) = compute_floating_rect_from_rects(
+            336.0,
+            68.0,
+            &selection.rects,
+            selection.bounds,
+            selection.cursor,
+            &monitors,
+        );
+        state.coordinator.lock().unwrap().last_pill_rect = Some(Bounds {
+            x: x as f64,
+            y: y as f64,
+            width: w as f64,
+            height: h as f64,
+        });
         if let Some(pill) = app_handle.get_webview_window("pill") {
             let _ = pill.emit("pill:show", PillShowEvent { text: selection.text });
         }
@@ -178,6 +195,7 @@ pub fn handle_deselection<R: Runtime>(app: &AppHandle<R>) {
     let is_pinned = {
         let mut coord = state.coordinator.lock().unwrap();
         coord.last_selection = None;
+        coord.last_pill_rect = None;
         coord.is_pinned
     };
     hide_pill_window(app);
@@ -189,6 +207,7 @@ pub fn handle_deselection<R: Runtime>(app: &AppHandle<R>) {
 pub fn handle_outside_click<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<AppState>();
     if is_hwnd_visible(state.pill_hwnd.load(Ordering::Acquire)) {
+        state.coordinator.lock().unwrap().last_pill_rect = None;
         hide_pill_window(app);
     }
     let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
@@ -204,6 +223,7 @@ pub fn handle_outside_click<R: Runtime>(app: &AppHandle<R>) {
 pub fn handle_escape_pressed<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<AppState>();
     if is_hwnd_visible(state.pill_hwnd.load(Ordering::Acquire)) {
+        state.coordinator.lock().unwrap().last_pill_rect = None;
         hide_pill_window(app);
     }
     let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
@@ -255,6 +275,7 @@ pub fn open_history_window<R: Runtime>(app: &AppHandle<R>) {
 pub fn cancel_and_hide_result<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<AppState>();
     let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
+    let _ = state.settings.lock().unwrap().persist_result_size_if_dirty();
     {
         let mut coord = state.coordinator.lock().unwrap();
         coord.active_generation = None;
@@ -410,6 +431,7 @@ pub fn set_pinned(state: State<'_, AppState>, pinned: bool) {
 
 #[tauri::command]
 pub fn dismiss_pill(app: AppHandle) {
+    app.state::<AppState>().coordinator.lock().unwrap().last_pill_rect = None;
     hide_pill_window(&app);
 }
 
@@ -470,10 +492,23 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
         }
     };
 
+    let pill_hwnd = state.pill_hwnd.load(Ordering::Acquire);
+    let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
+    let pill_visible = is_hwnd_visible(pill_hwnd);
+    let result_visible = is_hwnd_visible(result_hwnd);
+    // Pill click takes precedence (even if an old pinned Result was open elsewhere);
+    // Retry inside an already-open Result (when Pill is hidden) keeps Result frozen in place.
+    let keep_result_in_place = !pill_visible && result_visible;
+    let pill_anchor = if pill_visible {
+        get_hwnd_rect(pill_hwnd)
+    } else {
+        None
+    };
+
     hide_pill_window(&app);
 
     let generation = Uuid::new_v4().to_string();
-    let selection_anchor = {
+    let (anchor_rect, fallback_cursor) = {
         let mut coord = state.coordinator.lock().unwrap();
         if let Some(prev) = coord.active_task.take() {
             prev.abort();
@@ -481,7 +516,10 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
         coord.active_generation = Some(generation.clone());
         coord.retry_request = Some((skill, text.clone()));
         coord.is_pinned = false;
-        coord.last_selection.clone()
+        let rect = pill_anchor.or_else(|| coord.last_pill_rect.take());
+        let cursor = current_cursor_pos()
+            .or_else(|| coord.last_selection.as_ref().and_then(|s| s.cursor));
+        (rect, cursor)
     };
 
     if let Some(result_win) = app.get_webview_window("result") {
@@ -495,7 +533,6 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
         );
     }
 
-    let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
     let gen_for_show = generation.clone();
     let app_for_show = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -508,22 +545,26 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
             .as_deref()
             == Some(gen_for_show.as_str());
         if is_current {
-            let monitors = monitor_work_areas(&app_for_show);
-            let (x, y, w, h) = compute_floating_rect(
-                panel_size.width,
-                panel_size.height,
-                selection_anchor.as_ref().and_then(|s| s.bounds),
-                selection_anchor.as_ref().and_then(|s| s.cursor),
-                &monitors,
-            );
-            show_result_at_on_main_thread(
-                result_hwnd,
-                x,
-                y,
-                w as i32,
-                h as i32,
-                &state.ignoring_result_resize,
-            );
+            if keep_result_in_place && is_hwnd_visible(result_hwnd) {
+                foreground_result_on_main_thread(result_hwnd);
+            } else {
+                let monitors = monitor_work_areas(&app_for_show);
+                let (x, y, w, h) = compute_result_rect(
+                    panel_size.width,
+                    panel_size.height,
+                    anchor_rect,
+                    fallback_cursor,
+                    &monitors,
+                );
+                show_result_at_on_main_thread(
+                    result_hwnd,
+                    x,
+                    y,
+                    w as i32,
+                    h as i32,
+                    &state.ignoring_result_resize,
+                );
+            }
         }
     });
 

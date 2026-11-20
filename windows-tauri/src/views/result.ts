@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { formatTimestamp, renderMarkdownInto } from "../lib/markdown";
 import {
   HistoryEntry,
@@ -16,6 +17,20 @@ const ICON_COPY = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" a
 const ICON_CHECK = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.2 8.4 6.5 11.7 12.8 4.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_HISTORY = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.4-3.5L3 6M3 3v3h3M8 5.2V8l2 1.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ICON_CLOSE = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/></svg>`;
+const ICON_RESIZE_GRIP = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M8.5 2.5L2.5 8.5M8.5 6L6 8.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`;
+
+type ResizeDirection = Parameters<ReturnType<typeof getCurrentWindow>["startResizeDragging"]>[0];
+
+const RESIZE_HANDLES: Array<{ className: string; dir: ResizeDirection }> = [
+  { className: "resize-handle resize-handle-n", dir: "North" },
+  { className: "resize-handle resize-handle-s", dir: "South" },
+  { className: "resize-handle resize-handle-w", dir: "West" },
+  { className: "resize-handle resize-handle-e", dir: "East" },
+  { className: "resize-handle resize-handle-nw", dir: "NorthWest" },
+  { className: "resize-handle resize-handle-ne", dir: "NorthEast" },
+  { className: "resize-handle resize-handle-sw", dir: "SouthWest" },
+  { className: "resize-handle resize-handle-se", dir: "SouthEast" },
+];
 
 export function mountResultView(root: HTMLElement): void {
   document.documentElement.classList.add("transparent-window");
@@ -35,12 +50,6 @@ export function mountResultView(root: HTMLElement): void {
 
   const shell = document.createElement("div");
   shell.className = "result-shell";
-  shell.addEventListener("mousedown", (event) => {
-    if (!isPinned && event.target === shell) {
-      resetPanelState();
-      void invoke("dismiss_result");
-    }
-  });
 
   const card = document.createElement("div");
   card.className = "result-card";
@@ -112,8 +121,28 @@ export function mountResultView(root: HTMLElement): void {
   retryBtn.hidden = true;
   footer.append(statusEl, retryBtn);
 
-  card.append(header, body, historyTray, footer);
+  const resizeGrip = document.createElement("div");
+  resizeGrip.className = "result-resize-grip";
+  resizeGrip.setAttribute("aria-hidden", "true");
+  resizeGrip.innerHTML = ICON_RESIZE_GRIP;
+
+  card.append(header, body, historyTray, footer, resizeGrip);
   shell.appendChild(card);
+
+  const currentWindow = getCurrentWindow();
+  for (const spec of RESIZE_HANDLES) {
+    const handle = document.createElement("div");
+    handle.className = spec.className;
+    handle.setAttribute("aria-hidden", "true");
+    handle.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void currentWindow.startResizeDragging(spec.dir);
+    });
+    shell.appendChild(handle);
+  }
+
   root.replaceChildren(shell);
 
   function stopElapsed(): void {

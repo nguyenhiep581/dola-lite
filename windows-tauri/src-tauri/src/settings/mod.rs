@@ -189,6 +189,7 @@ pub struct SettingsStore {
     secrets: Box<dyn SecretStore>,
     configuration: ApiConfiguration,
     result_size: PanelSize,
+    result_size_dirty: bool,
     initialization_error: Option<String>,
 }
 
@@ -200,6 +201,7 @@ impl SettingsStore {
             secrets,
             configuration: ApiConfiguration::default(),
             result_size: PanelSize::default(),
+            result_size_dirty: false,
             initialization_error: None,
         };
         store.load();
@@ -299,21 +301,38 @@ impl SettingsStore {
         Ok(())
     }
 
-    pub fn save_result_size(&mut self, width: f64, height: f64) -> Result<(), SettingsError> {
-        if !width.is_finite() || !height.is_finite() || width < 320.0 || height < 240.0 {
-            return Ok(());
+    pub fn set_result_size_in_memory(&mut self, width: f64, height: f64) {
+        if !width.is_finite() || !height.is_finite() || width < 100.0 || height < 100.0 {
+            return;
         }
         let next = PanelSize {
-            width: width.clamp(320.0, 1400.0),
-            height: height.clamp(240.0, 1000.0),
+            width: width.clamp(320.0, 1400.0).round(),
+            height: height.clamp(240.0, 1000.0).round(),
         };
+        if (next.width - self.result_size.width).abs() >= 1.0
+            || (next.height - self.result_size.height).abs() >= 1.0
+        {
+            self.result_size = next;
+            self.result_size_dirty = true;
+        }
+    }
+
+    pub fn persist_result_size_if_dirty(&mut self) -> Result<(), SettingsError> {
+        if !self.result_size_dirty {
+            return Ok(());
+        }
         let persisted = PersistedSettings {
             configuration: self.configuration.clone(),
-            result_size: Some(next),
+            result_size: Some(self.result_size),
         };
         write_json_atomic(&self.file_path, &persisted)?;
-        self.result_size = next;
+        self.result_size_dirty = false;
         Ok(())
+    }
+
+    pub fn save_result_size(&mut self, width: f64, height: f64) -> Result<(), SettingsError> {
+        self.set_result_size_in_memory(width, height);
+        self.persist_result_size_if_dirty()
     }
 
     pub fn delete_api_key(&mut self) -> Result<(), SettingsError> {

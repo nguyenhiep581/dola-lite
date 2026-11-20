@@ -223,6 +223,36 @@ pub fn show_result_at_on_main_thread(
 ) {
 }
 
+/// Raises and foregrounds an already-visible Result Panel without moving or
+/// resizing it (used for Retry so an open panel stays exactly in place).
+#[cfg(windows)]
+pub fn foreground_result_on_main_thread(hwnd_raw: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    if hwnd_raw == 0 {
+        return;
+    }
+    let hwnd = HWND(hwnd_raw as _);
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn foreground_result_on_main_thread(_hwnd_raw: isize) {}
+
 /// Reliably hides a floating window on the UI thread via Win32 `ShowWindow(SW_HIDE)`,
 /// skipping already-hidden windows and avoiding `tao`'s stale `WindowFlags::VISIBLE`
 /// no-op / async `WindowMessage::Hide` race. Must be called on the UI thread.
@@ -257,6 +287,52 @@ pub fn is_hwnd_visible(hwnd_raw: isize) -> bool {
 #[cfg(not(windows))]
 pub fn is_hwnd_visible(_hwnd_raw: isize) -> bool {
     false
+}
+
+/// Returns the current physical-pixel bounding rectangle of a cached `HWND`.
+#[cfg(windows)]
+pub fn get_hwnd_rect(hwnd_raw: isize) -> Option<crate::selection::Bounds> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    if hwnd_raw == 0 {
+        return None;
+    }
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(HWND(hwnd_raw as _), &mut rect) }.ok()?;
+    let width = (rect.right - rect.left) as f64;
+    let height = (rect.bottom - rect.top) as f64;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(crate::selection::Bounds {
+        x: rect.left as f64,
+        y: rect.top as f64,
+        width,
+        height,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn get_hwnd_rect(_hwnd_raw: isize) -> Option<crate::selection::Bounds> {
+    None
+}
+
+/// Reads the current physical-pixel cursor position on Windows.
+#[cfg(windows)]
+pub fn current_cursor_pos() -> Option<(f64, f64)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut pt = POINT::default();
+    unsafe { GetCursorPos(&mut pt) }
+        .ok()
+        .map(|()| (pt.x as f64, pt.y as f64))
+}
+
+#[cfg(not(windows))]
+pub fn current_cursor_pos() -> Option<(f64, f64)> {
+    None
 }
 
 /// Returns true when the given cached top-level `HWND` is currently the Win32

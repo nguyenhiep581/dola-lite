@@ -107,11 +107,11 @@ pub fn run() {
                             if scale.is_finite() && scale > 0.0 {
                                 let logical_w = physical.width as f64 / scale;
                                 let logical_h = physical.height as f64 / scale;
-                                let _ = state
+                                state
                                     .settings
                                     .lock()
                                     .unwrap()
-                                    .save_result_size(logical_w, logical_h);
+                                    .set_result_size_in_memory(logical_w, logical_h);
                             }
                         }
                         _ => {}
@@ -122,8 +122,11 @@ pub fn run() {
             #[cfg(windows)]
             {
                 let handle = app.handle().clone();
-                selection::windows_uia::spawn_selection_worker(stop_flag.clone(), move |action| {
-                    match action {
+                selection::windows_uia::spawn_selection_worker(
+                    stop_flag.clone(),
+                    pill_hwnd,
+                    result_hwnd,
+                    move |action| match action {
                         selection::WatchAction::EmitSelection(sel) => {
                             commands::handle_selection_detected(&handle, sel);
                         }
@@ -131,8 +134,8 @@ pub fn run() {
                             commands::handle_deselection(&handle);
                         }
                         selection::WatchAction::None => {}
-                    }
-                });
+                    },
+                );
                 windows_shell::spawn_raw_input_watcher(
                     app.handle().clone(),
                     pill_hwnd,
@@ -172,6 +175,11 @@ pub fn run() {
             retry_last_skill,
             run_skill,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Dola Lite");
+        .build(tauri::generate_context!())
+        .expect("error while building Dola Lite")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                app_handle.state::<AppState>().shutdown();
+            }
+        });
 }
