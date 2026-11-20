@@ -1,6 +1,6 @@
 [package]
 name = "dola-lite"
-version = "1.1.0"
+version = "1.1.1"
 description = "Dola Lite — fast selection translator, summarizer, and explainer for Windows"
 authors = ["nguyenhiep581"]
 edition = "2021"
