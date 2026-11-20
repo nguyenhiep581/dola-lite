@@ -6,13 +6,16 @@ use crate::provider::{
 use crate::selection::{compute_floating_rect, Bounds, MonitorWorkArea, Selection};
 use crate::settings::{ApiConfiguration, ApiCredentialsSnapshot, SettingsStore};
 use crate::tray::refresh_tray_labels;
-use crate::windows_shell::{set_clipboard_text, show_window_no_activate};
+use crate::windows_shell::{
+    hide_hwnd_on_main_thread, is_hwnd_foreground, is_hwnd_visible, set_clipboard_text,
+    show_pill_at_on_main_thread, show_result_at_on_main_thread, shutdown_raw_input_watcher,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
 
@@ -77,6 +80,9 @@ pub struct AppState {
     pub http_client: Client,
     pub stop_flag: Arc<AtomicBool>,
     pub ignoring_result_resize: AtomicBool,
+    pub pill_hwnd: AtomicIsize,
+    pub result_hwnd: AtomicIsize,
+    pub raw_input_hwnd: Arc<AtomicIsize>,
 }
 
 impl AppState {
@@ -89,17 +95,28 @@ impl AppState {
             http_client,
             stop_flag: Arc::new(AtomicBool::new(false)),
             ignoring_result_resize: AtomicBool::new(false),
+            pill_hwnd: AtomicIsize::new(0),
+            result_hwnd: AtomicIsize::new(0),
+            raw_input_hwnd: Arc::new(AtomicIsize::new(0)),
         }
     }
 
     pub fn shutdown(&self) {
-        self.stop_flag.store(true, Ordering::Relaxed);
+        self.stop_flag.store(true, Ordering::SeqCst);
+        shutdown_raw_input_watcher(&self.raw_input_hwnd);
         let mut coord = self.coordinator.lock().unwrap();
         coord.active_generation = None;
         if let Some(task) = coord.active_task.take() {
             task.abort();
         }
     }
+}
+
+fn hide_pill_window<R: Runtime>(app: &AppHandle<R>) {
+    let hwnd = app.state::<AppState>().pill_hwnd.load(Ordering::Acquire);
+    let _ = app.run_on_main_thread(move || {
+        hide_hwnd_on_main_thread(hwnd);
+    });
 }
 
 fn monitor_work_areas<R: Runtime>(app: &AppHandle<R>) -> Vec<MonitorWorkArea> {
@@ -136,15 +153,24 @@ pub fn handle_selection_detected<R: Runtime>(app: &AppHandle<R>, selection: Sele
         cancel_and_hide_result(app);
     }
 
-    if let Some(pill) = app.get_webview_window("pill") {
-        let monitors = monitor_work_areas(app);
+    let pill_hwnd = state.pill_hwnd.load(Ordering::Acquire);
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let state = app_handle.state::<AppState>();
+        {
+            let coord = state.coordinator.lock().unwrap();
+            if coord.suspended || coord.last_selection.is_none() {
+                return;
+            }
+        }
+        let monitors = monitor_work_areas(&app_handle);
         let (x, y, w, h) =
-            compute_floating_rect(310.0, 46.0, selection.bounds, selection.cursor, &monitors);
-        let _ = pill.set_position(PhysicalPosition::new(x, y));
-        let _ = pill.set_size(PhysicalSize::new(w, h));
-        let _ = pill.emit("pill:show", PillShowEvent { text: selection.text });
-        show_window_no_activate(&pill);
-    }
+            compute_floating_rect(336.0, 68.0, selection.bounds, selection.cursor, &monitors);
+        if let Some(pill) = app_handle.get_webview_window("pill") {
+            let _ = pill.emit("pill:show", PillShowEvent { text: selection.text });
+        }
+        show_pill_at_on_main_thread(pill_hwnd, x, y, w as i32, h as i32);
+    });
 }
 
 pub fn handle_deselection<R: Runtime>(app: &AppHandle<R>) {
@@ -154,10 +180,38 @@ pub fn handle_deselection<R: Runtime>(app: &AppHandle<R>) {
         coord.last_selection = None;
         coord.is_pinned
     };
-    if let Some(pill) = app.get_webview_window("pill") {
-        let _ = pill.hide();
-    }
+    hide_pill_window(app);
     if !is_pinned {
+        cancel_and_hide_result(app);
+    }
+}
+
+pub fn handle_outside_click<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<AppState>();
+    if is_hwnd_visible(state.pill_hwnd.load(Ordering::Acquire)) {
+        hide_pill_window(app);
+    }
+    let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
+    if !is_hwnd_visible(result_hwnd) {
+        return;
+    }
+    let is_pinned = state.coordinator.lock().unwrap().is_pinned;
+    if !is_pinned {
+        cancel_and_hide_result(app);
+    }
+}
+
+pub fn handle_escape_pressed<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<AppState>();
+    if is_hwnd_visible(state.pill_hwnd.load(Ordering::Acquire)) {
+        hide_pill_window(app);
+    }
+    let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
+    if !is_hwnd_visible(result_hwnd) {
+        return;
+    }
+    let is_pinned = state.coordinator.lock().unwrap().is_pinned;
+    if !is_pinned || is_hwnd_foreground(result_hwnd) {
         cancel_and_hide_result(app);
     }
 }
@@ -168,9 +222,7 @@ pub fn open_settings_window<R: Runtime>(app: &AppHandle<R>) {
         let mut coord = state.coordinator.lock().unwrap();
         coord.suspended = true;
     }
-    if let Some(pill) = app.get_webview_window("pill") {
-        let _ = pill.hide();
-    }
+    hide_pill_window(app);
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.emit("settings:open", ());
         let _ = win.center();
@@ -202,6 +254,7 @@ pub fn open_history_window<R: Runtime>(app: &AppHandle<R>) {
 
 pub fn cancel_and_hide_result<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<AppState>();
+    let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
     {
         let mut coord = state.coordinator.lock().unwrap();
         coord.active_generation = None;
@@ -210,10 +263,13 @@ pub fn cancel_and_hide_result<R: Runtime>(app: &AppHandle<R>) {
             task.abort();
         }
     }
-    if let Some(win) = app.get_webview_window("result") {
-        let _ = win.emit("result:dismiss", ());
-        let _ = win.hide();
-    }
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = app_handle.get_webview_window("result") {
+            let _ = win.emit("result:dismiss", ());
+        }
+        hide_hwnd_on_main_thread(result_hwnd);
+    });
 }
 
 #[tauri::command]
@@ -354,9 +410,7 @@ pub fn set_pinned(state: State<'_, AppState>, pinned: bool) {
 
 #[tauri::command]
 pub fn dismiss_pill(app: AppHandle) {
-    if let Some(pill) = app.get_webview_window("pill") {
-        let _ = pill.hide();
-    }
+    hide_pill_window(&app);
 }
 
 #[tauri::command]
@@ -416,9 +470,7 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
         }
     };
 
-    if let Some(pill) = app.get_webview_window("pill") {
-        let _ = pill.hide();
-    }
+    hide_pill_window(&app);
 
     let generation = Uuid::new_v4().to_string();
     let selection_anchor = {
@@ -433,18 +485,6 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
     };
 
     if let Some(result_win) = app.get_webview_window("result") {
-        let monitors = monitor_work_areas(&app);
-        let (x, y, w, h) = compute_floating_rect(
-            panel_size.width,
-            panel_size.height,
-            selection_anchor.as_ref().and_then(|s| s.bounds),
-            selection_anchor.as_ref().and_then(|s| s.cursor),
-            &monitors,
-        );
-        state.ignoring_result_resize.store(true, Ordering::SeqCst);
-        let _ = result_win.set_position(PhysicalPosition::new(x, y));
-        let _ = result_win.set_size(PhysicalSize::new(w, h));
-        state.ignoring_result_resize.store(false, Ordering::SeqCst);
         let _ = result_win.emit(
             "result:start",
             ResultStartEvent {
@@ -453,8 +493,39 @@ pub fn run_skill(app: AppHandle, state: State<'_, AppState>, skill: Skill, text:
                 source_text: text.clone(),
             },
         );
-        show_window_no_activate(&result_win);
     }
+
+    let result_hwnd = state.result_hwnd.load(Ordering::Acquire);
+    let gen_for_show = generation.clone();
+    let app_for_show = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let state = app_for_show.state::<AppState>();
+        let is_current = state
+            .coordinator
+            .lock()
+            .unwrap()
+            .active_generation
+            .as_deref()
+            == Some(gen_for_show.as_str());
+        if is_current {
+            let monitors = monitor_work_areas(&app_for_show);
+            let (x, y, w, h) = compute_floating_rect(
+                panel_size.width,
+                panel_size.height,
+                selection_anchor.as_ref().and_then(|s| s.bounds),
+                selection_anchor.as_ref().and_then(|s| s.cursor),
+                &monitors,
+            );
+            show_result_at_on_main_thread(
+                result_hwnd,
+                x,
+                y,
+                w as i32,
+                h as i32,
+                &state.ignoring_result_resize,
+            );
+        }
+    });
 
     let app_handle = app.clone();
     let client = state.http_client.clone();

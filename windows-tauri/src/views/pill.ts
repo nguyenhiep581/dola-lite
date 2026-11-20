@@ -18,11 +18,17 @@ const PILL_SKILLS: Array<{ skill: Skill; svg: string }> = [
 ];
 
 export function mountPillView(root: HTMLElement): void {
+  document.documentElement.classList.add("transparent-window");
   document.body.classList.add("transparent-window");
   let currentText = "";
 
   const shell = document.createElement("div");
   shell.className = "pill-shell";
+  shell.addEventListener("mousedown", (event) => {
+    if (event.target === shell) {
+      void invoke("dismiss_pill");
+    }
+  });
 
   const bar = document.createElement("div");
   bar.className = "pill-bar";

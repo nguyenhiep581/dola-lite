@@ -30,7 +30,8 @@
   --radius-pill: 20px;
   --radius-card: 8px;
   --radius-control: 6px;
-  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-pill: 0 4px 12px rgba(0, 0, 0, 0.14), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-result: 0 2px 7px rgba(0, 0, 0, 0.14), 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -59,7 +60,8 @@
     --status-warning: #fce100;
     --status-error: #ff99a4;
 
-    --shadow-float: 0 10px 28px rgba(0, 0, 0, 0.48), 0 1px 3px rgba(0, 0, 0, 0.35);
+    --shadow-pill: 0 4px 12px rgba(0, 0, 0, 0.48), 0 1px 3px rgba(0, 0, 0, 0.32);
+    --shadow-result: 0 2px 7px rgba(0, 0, 0, 0.46), 0 1px 2px rgba(0, 0, 0, 0.30);
   }
 }
 
@@ -69,7 +71,17 @@
   box-sizing: border-box;
 }
 
-html,
+[hidden] {
+  display: none !important;
+}
+
+html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+}
+
 body {
   margin: 0;
   padding: 0;
@@ -83,8 +95,10 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+html.transparent-window,
+html.transparent-window body,
 body.transparent-window {
-  background: transparent;
+  background: transparent !important;
   overflow: hidden;
 }
 
@@ -123,28 +137,28 @@ select:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
+  padding: 10px 14px 16px;
 }
 
 .pill-bar {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 4px 6px;
+  padding: 4px 5px;
   border-radius: var(--radius-pill);
   background: var(--surface-card);
   border: 1px solid var(--border-hairline);
-  box-shadow: var(--shadow-float);
+  box-shadow: var(--shadow-pill);
 }
 
 .pill-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 28px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
-  border-radius: 14px;
+  border-radius: 15px;
   background: transparent;
   color: var(--text-primary);
   font-size: 12px;
@@ -152,6 +166,12 @@ select:focus-visible {
   cursor: pointer;
   white-space: nowrap;
   transition: background-color 120ms ease;
+}
+
+.pill-btn svg,
+.icon-btn svg {
+  pointer-events: none;
+  display: block;
 }
 
 .pill-btn:hover {
@@ -166,7 +186,7 @@ select:focus-visible {
 
 .result-shell {
   height: 100%;
-  padding: 4px;
+  padding: 6px 8px 10px;
 }
 
 .result-card {
@@ -176,7 +196,7 @@ select:focus-visible {
   border-radius: var(--radius-window);
   background: var(--surface-window);
   border: 1px solid var(--border-hairline);
-  box-shadow: var(--shadow-float);
+  box-shadow: var(--shadow-result);
   overflow: hidden;
 }
 
@@ -276,10 +296,6 @@ select:focus-visible {
   background: var(--surface-card);
   border: 1px solid var(--border-hairline);
   overflow: hidden;
-}
-
-.inline-history[hidden] {
-  display: none;
 }
 
 .inline-history-header {
@@ -532,10 +548,6 @@ select:focus-visible {
   color: var(--text-secondary);
 }
 
-.status-banner[hidden] {
-  display: none;
-}
-
 .status-banner.is-success {
   color: var(--status-success);
 }
@@ -683,10 +695,6 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 3px;
-}
-
-.history-meta-card[hidden] {
-  display: none;
 }
 
 .history-meta-info {

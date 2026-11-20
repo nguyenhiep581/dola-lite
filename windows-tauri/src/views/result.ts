@@ -18,6 +18,7 @@ const ICON_HISTORY = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none
 const ICON_CLOSE = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/></svg>`;
 
 export function mountResultView(root: HTMLElement): void {
+  document.documentElement.classList.add("transparent-window");
   document.body.classList.add("transparent-window");
 
   let activeGeneration = "";
@@ -34,6 +35,12 @@ export function mountResultView(root: HTMLElement): void {
 
   const shell = document.createElement("div");
   shell.className = "result-shell";
+  shell.addEventListener("mousedown", (event) => {
+    if (!isPinned && event.target === shell) {
+      resetPanelState();
+      void invoke("dismiss_result");
+    }
+  });
 
   const card = document.createElement("div");
   card.className = "result-card";

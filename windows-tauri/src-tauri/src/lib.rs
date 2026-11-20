@@ -43,14 +43,26 @@ pub fn run() {
 
             let state = AppState::new(settings_store, history_store);
             let stop_flag = state.stop_flag.clone();
+            let raw_input_hwnd = state.raw_input_hwnd.clone();
+
+            let mut pill_hwnd: isize = 0;
+            if let Some(pill) = app.get_webview_window("pill") {
+                windows_shell::configure_non_activating_window(&pill);
+                pill_hwnd = windows_shell::capture_hwnd(&pill);
+                state.pill_hwnd.store(pill_hwnd, Ordering::Release);
+            }
+
+            let mut result_hwnd: isize = 0;
+            if let Some(result) = app.get_webview_window("result") {
+                windows_shell::configure_frameless_transparent_window(&result);
+                result_hwnd = windows_shell::capture_hwnd(&result);
+                state.result_hwnd.store(result_hwnd, Ordering::Release);
+            }
+
             app.manage(state);
 
             let tray_handles = tray::build_tray(app.handle())?;
             app.manage(tray_handles);
-
-            if let Some(pill) = app.get_webview_window("pill") {
-                windows_shell::configure_non_activating_window(&pill);
-            }
 
             // Keep utility windows alive on close (hide instead of destroying webviews)
             // and persist logical Result Panel dimensions accurately across HiDPI monitors.
@@ -70,20 +82,24 @@ pub fn run() {
                             }
                         }
                         WindowEvent::Focused(false) if label == "result" => {
-                            let is_pinned = app_handle
-                                .state::<AppState>()
-                                .coordinator
-                                .lock()
-                                .unwrap()
-                                .is_pinned;
-                            if !is_pinned && win_clone.is_visible().unwrap_or(false) {
+                            let state = app_handle.state::<AppState>();
+                            let is_pinned = state.coordinator.lock().unwrap().is_pinned;
+                            let res_hwnd = state.result_hwnd.load(Ordering::Acquire);
+                            // In tauri-runtime-wry, Focused(false) originates from WebView2's
+                            // LostFocus (which can fire during titlebar drag / border resize
+                            // while the Result Panel is still the foreground top-level window).
+                            if !is_pinned
+                                && windows_shell::is_hwnd_visible(res_hwnd)
+                                && !windows_shell::is_hwnd_foreground(res_hwnd)
+                            {
                                 cancel_and_hide_result(&app_handle);
                             }
                         }
                         WindowEvent::Resized(physical) if label == "result" => {
                             let state = app_handle.state::<AppState>();
+                            let res_hwnd = state.result_hwnd.load(Ordering::Acquire);
                             if state.ignoring_result_resize.load(Ordering::SeqCst)
-                                || !win_clone.is_visible().unwrap_or(false)
+                                || !windows_shell::is_hwnd_visible(res_hwnd)
                             {
                                 return;
                             }
@@ -106,7 +122,7 @@ pub fn run() {
             #[cfg(windows)]
             {
                 let handle = app.handle().clone();
-                selection::windows_uia::spawn_selection_worker(stop_flag, move |action| {
+                selection::windows_uia::spawn_selection_worker(stop_flag.clone(), move |action| {
                     match action {
                         selection::WatchAction::EmitSelection(sel) => {
                             commands::handle_selection_detected(&handle, sel);
@@ -117,9 +133,18 @@ pub fn run() {
                         selection::WatchAction::None => {}
                     }
                 });
+                windows_shell::spawn_raw_input_watcher(
+                    app.handle().clone(),
+                    pill_hwnd,
+                    result_hwnd,
+                    stop_flag,
+                    raw_input_hwnd,
+                    commands::handle_outside_click,
+                    commands::handle_escape_pressed,
+                );
             }
             #[cfg(not(windows))]
-            let _ = stop_flag;
+            let _ = (stop_flag, pill_hwnd, result_hwnd, raw_input_hwnd);
 
             if !has_key {
                 open_settings_window(app.handle());
