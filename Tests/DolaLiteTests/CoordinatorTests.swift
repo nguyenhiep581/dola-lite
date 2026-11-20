@@ -148,6 +148,34 @@ struct CoordinatorTests {
         #expect(history.entries.isEmpty)
     }
 
+    @Test func retryPreservesMovedResultPanelFrame() async {
+        _ = NSApplication.shared
+        let suite = "DolaLite.CoordinatorTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let provider = ControlledProvider()
+        let pill = PillPanel()
+        let result = ResultPanel()
+        let coordinator = PanelCoordinator(pill: pill, result: result, provider: provider,
+                                           settings: APISettingsStore(defaults: defaults, keyStore: CoordinatorKeyStore()),
+                                           openSettings: {})
+        defer { coordinator.shutdown() }
+
+        pill.onSkillTap?(.explain, "Jira bug")
+        for _ in 0..<100 where provider.streams.isEmpty { await Task.yield() }
+        provider.streams.first?.finish(throwing: APIProviderError.network)
+        for _ in 0..<100 where !result.isVisible { await Task.yield() }
+
+        let customOrigin = NSPoint(x: result.frame.minX + 60, y: result.frame.minY + 40)
+        result.setFrameOrigin(customOrigin)
+        let expectedFrame = result.frame
+
+        result.onRetry?()
+        for _ in 0..<100 where provider.streams.count < 2 { await Task.yield() }
+        #expect(provider.streams.count == 2)
+        #expect(result.frame == expectedFrame)
+    }
+
     private func findButton(in view: NSView, label: String) -> NSButton? {
         if let button = view as? NSButton, button.accessibilityLabel() == label { return button }
         for subview in view.subviews {

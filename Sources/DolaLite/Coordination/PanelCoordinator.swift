@@ -37,7 +37,8 @@ final class PanelCoordinator {
         result.onSelectHistory = { [weak self] in self?.stopCurrentRequestForHistory() }
         result.onRetry = { [weak self] in
             guard let self, let request = self.retryRequest else { return }
-            self.run(skill: request.0, text: request.1, anchor: request.2)
+            self.run(skill: request.0, text: request.1, anchor: request.2,
+                     preserveResultFrame: self.result.isVisible)
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             MainActor.assumeIsolated { self?.handle(event, local: false) }
@@ -115,7 +116,7 @@ final class PanelCoordinator {
         dismissAll()
     }
 
-    private func run(skill: Skill, text: String, anchor: NSRect?) {
+    private func run(skill: Skill, text: String, anchor: NSRect?, preserveResultFrame: Bool = false) {
         guard settings.hasAPIKey else {
             dismissAll()
             openSettings()
@@ -127,7 +128,7 @@ final class PanelCoordinator {
         requestTask?.cancel()
         retryRequest = (skill, text, anchor)
         pill.dismiss()
-        result.show(skill: skill, near: anchor)
+        result.show(skill: skill, near: anchor, preserveCurrentFrame: preserveResultFrame)
         requestTask = Task { [weak self] in
             guard let self else { return }
             do {

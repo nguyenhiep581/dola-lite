@@ -5,46 +5,74 @@ import Testing
 @Suite struct UIPlacementTests {
     @Test func secondaryDisplayWithNegativeCoordinatesIsRespected() {
         let screens = [NSRect(x: 0, y: 0, width: 1440, height: 900), NSRect(x: -1280, y: 0, width: 1280, height: 1024)]
-        let result = PanelPlacement.frame(size: NSSize(width: 390, height: 350),
+        let pill = PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40),
             anchor: NSRect(x: -900, y: 300, width: 100, height: 20), mouseLocation: .zero, screens: screens)
+        #expect(screens[1].contains(pill))
+        #expect(pill.maxY == 288)
+
+        let result = PanelPlacement.resultFrame(size: NSSize(width: 390, height: 350),
+            anchor: NSRect(x: -900, y: 500, width: 298, height: 40), mouseLocation: .zero, screens: screens)
         #expect(screens[1].contains(result))
-        #expect(result.minY == 330)
+        #expect(result.maxY == 540)
     }
 
     @Test func pillPlacementPreservesItsCompactRequestedSize() {
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let frame = PanelPlacement.frame(size: NSSize(width: 298, height: 40), anchor: NSRect(x: 400, y: 300, width: 80, height: 20),
-                                         mouseLocation: .zero, screens: [screen])
+        let frame = PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40), anchor: NSRect(x: 400, y: 300, width: 80, height: 20),
+                                             mouseLocation: .zero, screens: [screen])
         #expect(frame.size == NSSize(width: 298, height: 40))
         #expect(screen.contains(frame))
     }
 
-    @Test func nearTopFallsBelowSelectionAndClampsHorizontalEdges() {
+    @Test func nearTopAndBottomEdgesClampHorizontalAndVerticalEdges() {
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let result = PanelPlacement.frame(size: NSSize(width: 390, height: 350),
+        let nearTop = PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40),
             anchor: NSRect(x: 1420, y: 850, width: 20, height: 20), mouseLocation: .zero, screens: [screen])
-        #expect(result.maxX == 1432)
-        #expect(result.maxY == 840)
-        #expect(screen.contains(result))
+        #expect(nearTop.maxX == 1432)
+        #expect(nearTop.maxY == 838)
+        #expect(screen.contains(nearTop))
     }
 
-    @Test func missingBoundsUsesMouseDisplayAndSmallScreensFit() {
-        let screen = NSRect(x: 0, y: -200, width: 300, height: 250)
-        let result = PanelPlacement.frame(size: NSSize(width: 390, height: 350), anchor: nil,
-            mouseLocation: NSPoint(x: 80, y: -80), screens: [screen])
-        #expect(screen.contains(result))
-        #expect(result.width == 284)
-        #expect(result.height == 234)
+    @Test func missingBoundsUsesNearestMouseDisplayAndSmallScreensFit() {
+        let small = NSRect(x: 0, y: -200, width: 300, height: 250)
+        let smallResult = PanelPlacement.resultFrame(size: NSSize(width: 390, height: 350), anchor: nil,
+            mouseLocation: NSPoint(x: 80, y: -80), screens: [small])
+        #expect(small.contains(smallResult))
+        #expect(smallResult.width == 284)
+        #expect(smallResult.height == 234)
+
+        // Cursor slightly outside visibleFrame (e.g., menu bar / Dock on secondary display) still picks secondary display.
+        let main = NSRect(x: 0, y: 0, width: 1440, height: 875)
+        let secondaryVisible = NSRect(x: -1280, y: 40, width: 1280, height: 960)
+        let dockCursor = NSPoint(x: -640, y: 12)
+        let onSecondary = PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40), anchor: nil,
+            mouseLocation: dockCursor, screens: [main, secondaryVisible])
+        #expect(secondaryVisible.contains(onSecondary))
     }
 
-    @Test func restoredPanelSizeIsClampedToTheSelectedDisplay() {
+    @Test func restoredPanelSizeAndPartialOrZeroAnchorsAreClampedProperly() {
         let screen = NSRect(x: -800, y: -100, width: 800, height: 600)
-        let frame = PanelPlacement.frame(size: NSSize(width: 1200, height: 900),
-                                         anchor: NSRect(x: -600, y: 100, width: 20, height: 20),
-                                         mouseLocation: .zero, screens: [screen])
+        let frame = PanelPlacement.resultFrame(size: NSSize(width: 1200, height: 900),
+                                              anchor: NSRect(x: -600, y: 100, width: 20, height: 20),
+                                              mouseLocation: .zero, screens: [screen])
         #expect(screen.insetBy(dx: 8, dy: 8).contains(frame))
         #expect(frame.width == 784)
         #expect(frame.height == 584)
+
+        // Zero-size anchor on screen stays valid instead of being rejected by zero-area intersects.
+        let main = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let zeroAnchor = NSRect(x: 400, y: 500, width: 0, height: 0)
+        let pillFromZero = PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40), anchor: zeroAnchor,
+            mouseLocation: NSPoint(x: 1200, y: 200), screens: [main])
+        #expect(pillFromZero.midX == 400)
+        #expect(pillFromZero.maxY == 488)
+
+        // Partially offscreen anchor stays on-screen and clamps pill inside margin.
+        let partial = NSRect(x: -50, y: 400, width: 120, height: 20)
+        let pillFromPartial = PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40), anchor: partial,
+            mouseLocation: NSPoint(x: 1000, y: 200), screens: [main])
+        #expect(pillFromPartial.minX == 8)
+        #expect(pillFromPartial.maxY == 388)
     }
 
     @Test func movedPanelIsClampedAndKeepsMinimumSize() {
@@ -82,6 +110,65 @@ import Testing
         #expect(clampedEdge.maxY == initial.maxY)
         #expect(clampedEdge.maxX == 1432)
         #expect(clampedEdge.minY == 8)
+    }
+
+    @Test func pillPlacementPrefersBelowSelectionToAvoidAskRovoAndHandlesEdgeCases() {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let pillSize = NSSize(width: 298, height: 40)
+
+        // Default placement sits below selection (maxY == anchor.minY - 12), avoiding Jira's Ask Rovo bar above.
+        let anchor = NSRect(x: 500, y: 400, width: 120, height: 22)
+        let below = PanelPlacement.pillFrame(size: pillSize, anchor: anchor, mouseLocation: NSPoint(x: 610, y: 405), screens: [screen])
+        #expect(below.maxY == anchor.minY - 12)
+        #expect(below.midX == anchor.midX)
+        #expect(screen.contains(below))
+
+        // Near bottom edge: flips above selection instead of clipping below taskbar/dock.
+        let lowAnchor = NSRect(x: 500, y: 20, width: 120, height: 22)
+        let flippedAbove = PanelPlacement.pillFrame(size: pillSize, anchor: lowAnchor, mouseLocation: NSPoint(x: 550, y: 30), screens: [screen])
+        #expect(flippedAbove.minY == lowAnchor.maxY + 12)
+        #expect(screen.contains(flippedAbove))
+
+        // Off-screen anchor is rejected and falls back cleanly to cursor location.
+        let offscreen = NSRect(x: -4000, y: 400, width: 100, height: 20)
+        let fallback = PanelPlacement.pillFrame(size: pillSize, anchor: offscreen, mouseLocation: NSPoint(x: 700, y: 500), screens: [screen])
+        #expect(fallback.midX == 700)
+        #expect(fallback.maxY == 488.0)
+
+        // Tall multi-paragraph selection collapses near nearby mouse pointer...
+        let tall = NSRect(x: 300, y: 120, width: 500, height: 420)
+        let mouseNearBottom = NSPoint(x: 640, y: 160)
+        let nearMouse = PanelPlacement.pillFrame(size: pillSize, anchor: tall, mouseLocation: mouseNearBottom, screens: [screen])
+        #expect(nearMouse.midX == 640.5)
+        #expect(nearMouse.maxY == (mouseNearBottom.y - 12) - 12)
+
+        // ...while keyboard selection with faraway cursor preserves the valid on-screen anchor.
+        let keyboardSelection = PanelPlacement.pillFrame(size: pillSize, anchor: tall, mouseLocation: NSPoint(x: 1350, y: 850), screens: [screen])
+        #expect(keyboardSelection.midX == tall.midX)
+        #expect(keyboardSelection.maxY == tall.minY - 12)
+    }
+
+    @Test func resultFrameOpensInPlaceAtPillTopCenterAndClampsSmoothly() {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let resultSize = NSSize(width: 390, height: 350)
+
+        let pill = NSRect(x: 500, y: 600, width: 298, height: 40)
+        let opened = PanelPlacement.resultFrame(size: resultSize, anchor: pill, mouseLocation: .zero, screens: [screen])
+        #expect(opened.maxY == pill.maxY)
+        #expect(opened.midX == pill.midX)
+        #expect(opened.size == resultSize)
+
+        // Near bottom edge: slides up only enough to remain onscreen with 8pt margin, staying centered on pill X.
+        let lowPill = NSRect(x: 500, y: 100, width: 298, height: 40)
+        let clamped = PanelPlacement.resultFrame(size: resultSize, anchor: lowPill, mouseLocation: .zero, screens: [screen])
+        #expect(clamped.minY == 8)
+        #expect(clamped.midX == lowPill.midX)
+
+        // Near right edge: clamps X cleanly inside screen margin.
+        let rightPill = NSRect(x: 1120, y: 600, width: 298, height: 40)
+        let rightClamped = PanelPlacement.resultFrame(size: resultSize, anchor: rightPill, mouseLocation: .zero, screens: [screen])
+        #expect(rightClamped.maxX == 1432)
+        #expect(rightClamped.maxY == rightPill.maxY)
     }
 
     @Test func historyTrayKeepsMinimumSpaceWhenPanelCannotGrow() {

@@ -52,8 +52,8 @@ final class PillPanel: NSPanel {
 
     func show(text: String, near rect: NSRect?) {
         selectedText = text
-        setFrame(PanelPlacement.frame(size: NSSize(width: 298, height: 40), anchor: rect,
-                                      mouseLocation: NSEvent.mouseLocation, screens: NSScreen.screens.map(\.visibleFrame)), display: true)
+        setFrame(PanelPlacement.pillFrame(size: NSSize(width: 298, height: 40), anchor: rect,
+                                          mouseLocation: NSEvent.mouseLocation, screens: NSScreen.screens.map(\.visibleFrame)), display: true)
         orderFrontRegardless()
     }
 

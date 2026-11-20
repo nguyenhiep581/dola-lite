@@ -293,7 +293,7 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
         setFrame(resized, display: true)
     }
 
-    func show(skill: Skill, near rect: NSRect?) {
+    func show(skill: Skill, near rect: NSRect?, preserveCurrentFrame: Bool = false) {
         hideHistory(restoreFrame: true)
         resetCopyFeedback()
         pendingRender?.cancel(); pendingRender = nil
@@ -310,11 +310,18 @@ final class ResultPanel: NSPanel, NSWindowDelegate {
         retryButton.isHidden = true
         spinner.startAnimation(nil)
         startElapsedCounter()
-        let preferredSize = sizeStore.load(default: NSSize(width: 390, height: 350))
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        let targetFrame: NSRect
+        if preserveCurrentFrame, isVisible {
+            targetFrame = PanelPlacement.clampedFrame(frame, screens: screens, minimumSize: minSize)
+        } else {
+            let preferredSize = sizeStore.load(default: NSSize(width: 390, height: 350))
+            targetFrame = PanelPlacement.resultFrame(size: preferredSize, anchor: rect,
+                                                     mouseLocation: NSEvent.mouseLocation, screens: screens,
+                                                     minimumSize: minSize)
+        }
         isProgrammaticFrameChange = true
-        setFrame(PanelPlacement.frame(size: preferredSize, anchor: rect,
-                                      mouseLocation: NSEvent.mouseLocation, screens: NSScreen.screens.map(\.visibleFrame),
-                                      minimumSize: minSize), display: true)
+        setFrame(targetFrame, display: true)
         isProgrammaticFrameChange = false
         syncContainerWidth()
         orderFrontRegardless()
